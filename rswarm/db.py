@@ -520,6 +520,7 @@ class SwarmDB:
             target = self.get_meta("leaderboard_target")
             direction = self.get_meta("direction", "minimize")
             global_best = self.get_meta("best_score")
+            global_best_nid = self.get_meta("best_node_id")
 
             node = self.get_node(node_id)
             if not node:
@@ -542,11 +543,24 @@ class SwarmDB:
             with self._connect() as conn:
                 isl = conn.execute("SELECT * FROM islands WHERE island_id=?", (island_id,)).fetchone()
                 isl_best = isl["best_score"] if isl else None
+                isl_best_nid = isl["best_node_id"] if isl else None
                 beat_island = bool(
-                    valid and score is not None and (isl_best is None or is_better_score(score, float(isl_best), direction))
+                    valid
+                    and score is not None
+                    and (
+                        isl_best is None
+                        or is_better_score(score, float(isl_best), direction)
+                        or (isl_best_nid == node_id and abs(score - float(isl_best)) <= 1e-12)
+                    )
                 )
                 beat_global = bool(
-                    valid and score is not None and (global_best is None or is_better_score(score, float(global_best), direction))
+                    valid
+                    and score is not None
+                    and (
+                        global_best is None
+                        or is_better_score(score, float(global_best), direction)
+                        or (global_best_nid == node_id and abs(score - float(global_best)) <= 1e-12)
+                    )
                 )
 
                 is_breakthrough = beat_parent or beat_island or beat_global
