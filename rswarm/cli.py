@@ -85,6 +85,8 @@ def _build_config_from_args(args: argparse.Namespace) -> SwarmConfig:
         brief=brief,
         direction=args.direction,
         leaderboard_target=args.target,
+        leaderboard_number_one=args.leaderboard_one,
+        leaderboard_submit_threshold=args.submit_threshold,
         harness=args.harness,
         custom_harness_cmd=args.custom_cmd or "",
         researcher_model=args.researcher_model,
@@ -241,10 +243,12 @@ def _cmd_status(args: argparse.Namespace) -> int:
     console = Console()
 
     console.print(f"[bold bright_cyan]Workspace:[/] {ws}  ([bold]{cfg.name}[/])")
+    lb1_str = f"  |  LB #1: [bold bright_magenta]{cfg.leaderboard_number_one}[/]" if cfg.leaderboard_number_one is not None else ""
+    gate_str = f"  |  Submit Gate (Top 5): [bold cyan]{cfg.leaderboard_submit_threshold}[/]" if cfg.leaderboard_submit_threshold is not None else ""
     console.print(
         f"  Baseline: [white]{st['baseline_score']}[/] (1.0000x)  |  "
         f"Global Best: [bold green]{st['best_score']}[/] ([bold green]{float(st['best_speedup'] or 1.0):.4f}x[/])  |  "
-        f"Target: [gold1]{st['leaderboard_target']}[/] ({cfg.direction})"
+        f"Goal: [gold1]{st['leaderboard_target']}[/] ({cfg.direction}){lb1_str}{gate_str}"
     )
     avg_s = float(st["avg_eval_ms"] or 0.0) / 1000.0
     console.print(
@@ -444,7 +448,9 @@ def _add_shared_init_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--workspace", help="Explicit workspace directory path (overrides --workspace-root).")
     p.add_argument("--workspace-root", default=str(DEFAULT_WORKSPACE_ROOT), help="Parent folder for auto-created workspaces.")
     p.add_argument("--direction", choices=["minimize", "maximize"], default="minimize", help="Score optimization direction.")
-    p.add_argument("--target", type=float, default=None, help="Leaderboard #1 or goal score to beat.")
+    p.add_argument("--target", type=float, default=None, help="Goal score milestone.")
+    p.add_argument("--leaderboard-one", type=float, default=None, help="Current #1 score on the public competition leaderboard.")
+    p.add_argument("--submit-threshold", type=float, default=None, help="Score threshold (e.g. Top-5) required before hosted leaderboard submission fires.")
     p.add_argument("--harness", default="claude-mux-scale", choices=["claude-mux", "claude-mux-scale", "claude-mux-lite", "custom"])
     p.add_argument("--custom-cmd", default="", help="Command template for --harness custom ({prompt_file}, {model}, {workdir}).")
     p.add_argument("--researcher-model", default=DEFAULT_DEEPSEEK_MODEL, help="Mux model ID for Researcher (EXPLORE) agents.")

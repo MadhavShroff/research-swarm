@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import SwarmDB
-from .models import SwarmConfig
+from .models import SwarmConfig, meets_or_beats_score
 
 
 def send_rpc_request(sock_path: str | Path, payload: dict[str, Any], timeout_sec: float = 240.0) -> dict[str, Any]:
@@ -422,10 +422,39 @@ class EvalAndTreeService:
                         spawned_children.append(x_id)
 
             hosted_res = None
-            if eval_res["beat_global"] and (req_hosted or self.cfg.auto_hosted_on_sota):
-                hosted_res = await self.handle_hosted_submit(
-                    {"node_id": node_id, "candidate_path": str(vault_target), "note": summary}
-                )
+            sub_thresh = self.cfg.leaderboard_submit_threshold
+            if eval_res["beat_global"] and eval_res["score"] is not None:
+                if sub_thresh is not None:
+                    if meets_or_beats_score(float(eval_res["score"]), float(sub_thresh), self.cfg.direction):
+                        hosted_res = await self.handle_hosted_submit(
+                            {
+                                "node_id": node_id,
+                                "candidate_path": str(vault_target),
+                                "note": summary,
+                                "verified_score": float(eval_res["score"]),
+                            }
+                        )
+                    elif req_hosted or self.cfg.auto_hosted_on_sota:
+                        hosted_res = {
+                            "ok": False,
+                            "submitted": False,
+                            "gated": True,
+                            "threshold": sub_thresh,
+                            "local_score": eval_res["score"],
+                            "message": (
+                                f"Held until leaderboard submit threshold ({sub_thresh}) is reached "
+                                f"(current score: {eval_res['score']})."
+                            ),
+                        }
+                elif req_hosted or self.cfg.auto_hosted_on_sota:
+                    hosted_res = await self.handle_hosted_submit(
+                        {
+                            "node_id": node_id,
+                            "candidate_path": str(vault_target),
+                            "note": summary,
+                            "verified_score": float(eval_res["score"]),
+                        }
+                    )
 
             return {
                 **eval_res,
@@ -475,7 +504,34 @@ class EvalAndTreeService:
 
         cpath = Path(cand_str).resolve()
         node = self.db.get_node(node_id) if node_id else None
-        local_score = node["score"] if node else None
+        local_score = req.get("verified_score")
+        if local_score is None and node and node.get("valid") and node.get("score") is not None:
+            local_score = float(node["score"])
+
+        sub_thresh = self.cfg.leaderboard_submit_threshold
+        if sub_thresh is not None and not bool(req.get("force", False)):
+            if local_score is None:
+                check = await self.execute_raw_local_eval(cpath)
+                if not check["valid"] or check["score"] is None:
+                    msg = f"Cannot submit invalid candidate to leaderboard: {check['diagnostics']}"
+                    self.db.log_event("WARN", node_id or "hosted", msg)
+                    return {"ok": False, "submitted": False, "gated": True, "error": msg}
+                local_score = float(check["score"])
+            if not meets_or_beats_score(float(local_score), float(sub_thresh), self.cfg.direction):
+                cmp_op = "<=" if self.cfg.direction == "minimize" else ">="
+                msg = (
+                    f"Blocked by Top-5 leaderboard gate: verified score {local_score} must be "
+                    f"{cmp_op} {sub_thresh} before submitting to the competition leaderboard."
+                )
+                self.db.log_event("INFO", node_id or "hosted", msg)
+                return {
+                    "ok": False,
+                    "submitted": False,
+                    "gated": True,
+                    "threshold": sub_thresh,
+                    "local_score": local_score,
+                    "error": msg,
+                }
 
         proc = await asyncio.create_subprocess_exec(
             "bash",

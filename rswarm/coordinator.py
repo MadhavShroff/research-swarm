@@ -61,6 +61,17 @@ class SwarmCoordinator:
         self._island_rr: int = 0
         self._cfg_path: Path = self.ws / "swarm.json"
         self._cfg_mtime: float = self._cfg_path.stat().st_mtime if self._cfg_path.is_file() else 0.0
+        self._sync_config_meta(self.cfg)
+
+    def _sync_config_meta(self, c: SwarmConfig) -> None:
+        self.db.set_meta("concurrency", c.concurrency)
+        self.db.set_meta("harness", c.harness)
+        self.db.set_meta("researcher_model", c.researcher_model)
+        self.db.set_meta("implementer_model", c.implementer_model)
+        self.db.set_meta("role_routing", c.role_routing_dict())
+        self.db.set_meta("leaderboard_target", c.leaderboard_target)
+        self.db.set_meta("leaderboard_number_one", c.leaderboard_number_one)
+        self.db.set_meta("leaderboard_submit_threshold", c.leaderboard_submit_threshold)
 
     def _reload_live_config_if_changed(self) -> None:
         """Hot-reload swarm.json live without interrupting in-flight agents."""
@@ -95,11 +106,7 @@ class SwarmCoordinator:
         self.governor.min_avail_mem_gib = new_cfg.min_avail_mem_gib
         self.governor.max_heavy_mux_procs = new_cfg.max_heavy_mux_procs
 
-        self.db.set_meta("concurrency", new_cfg.concurrency)
-        self.db.set_meta("harness", new_cfg.harness)
-        self.db.set_meta("researcher_model", new_cfg.researcher_model)
-        self.db.set_meta("implementer_model", new_cfg.implementer_model)
-        self.db.set_meta("role_routing", new_r)
+        self._sync_config_meta(new_cfg)
         if changes:
             self.db.log_event("INFO", "hot-reload", "Live config applied: " + ", ".join(changes))
 

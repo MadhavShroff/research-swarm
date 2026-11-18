@@ -228,6 +228,8 @@ async def bootstrap_workspace(
     db.set_meta("name", cfg.name)
     db.set_meta("direction", cfg.direction)
     db.set_meta("leaderboard_target", cfg.leaderboard_target)
+    db.set_meta("leaderboard_number_one", cfg.leaderboard_number_one)
+    db.set_meta("leaderboard_submit_threshold", cfg.leaderboard_submit_threshold)
     db.set_meta("harness", cfg.harness)
     db.set_meta("researcher_model", cfg.researcher_model)
     db.set_meta("implementer_model", cfg.implementer_model)
