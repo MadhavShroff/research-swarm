@@ -123,9 +123,15 @@ class SwarmCoordinator:
         """Create a lightweight zero-copy sandbox for `node` with symlinks to shared read-only data."""
         nid = str(node["node_id"])
         wdir = self.ws / "work" / nid
-        if wdir.exists():
-            shutil.rmtree(wdir)
-        wdir.mkdir(parents=True, exist_ok=True)
+        is_resume = wdir.exists() and (
+            int(node.get("timeout_retries") or 0) > 0
+            or (wdir / ".rswarm_checkpoint.json").is_file()
+            or (wdir / ".rswarm_started").is_file()
+        )
+        if not is_resume:
+            if wdir.exists():
+                shutil.rmtree(wdir)
+            wdir.mkdir(parents=True, exist_ok=True)
 
         # Symlink CLAUDE.md, skills, and shared read-only assets (zero disk/RAM bloat across 100s of agents!).
         for link_item in ("CLAUDE.md", ".claude", ".agents", "shared"):
@@ -134,7 +140,7 @@ class SwarmCoordinator:
             if src.exists() and not dst.exists():
                 os.symlink(src, dst)
 
-        # Copy mutable parent candidate so the agent can edit freely without mutating the vault.
+        # Copy mutable parent candidate on initial start; preserve agent's in-progress candidate on resume!
         parent = self.db.get_node(node["parent_id"]) if node.get("parent_id") else None
         cand_src_str = (
             node.get("candidate_path")
@@ -147,11 +153,14 @@ class SwarmCoordinator:
             cand_dir = wdir / "candidate"
             cand_dir.mkdir(parents=True, exist_ok=True)
             cdst = cand_dir / csrc.name
-            if csrc.is_dir():
-                shutil.copytree(csrc, cdst, symlinks=True)
-            else:
-                shutil.copy2(csrc, cdst)
+            if not cdst.exists():
+                if csrc.is_dir():
+                    shutil.copytree(csrc, cdst, symlinks=True)
+                else:
+                    shutil.copy2(csrc, cdst)
             copied_cand = cdst
+
+        (wdir / ".rswarm_started").write_text(str(time.time()))
 
         # If CROSSOVER has a secondary parent, provide its artifact under ./secondary_parent/ for inspection!
         sec_id = node.get("secondary_parent_id")
@@ -387,10 +396,37 @@ Steps:
                 system_prompt=sys_prompt,
                 task_prompt=task_prompt,
                 timeout_sec=self.cfg.agent_timeout_sec,
+                http_timeout_sec=self.cfg.http_timeout_sec,
             )
 
             # Refresh node state from DB to see if agent already called `swarm-submit` or `swarm-propose`.
             refreshed = self.db.get_node(nid) or node
+            retries = int(refreshed.get("timeout_retries") or 0)
+
+            # If agent hit timeout / rate-limit ceiling before finishing, preserve workdir + checkpoint and re-queue!
+            if (
+                refreshed["status"] == "RUNNING"
+                and (res.timed_out or res.exit_code == 124)
+                and retries < self.cfg.max_timeout_retries
+            ):
+                next_try = retries + 1
+                self.db.update_node_runtime(
+                    nid,
+                    status="QUEUED",
+                    tmux_window="",
+                    timeout_retries=next_try,
+                    diagnostics=(
+                        f"Window timeout ({res.elapsed_sec:.0f}s); checkpoint & workdir preserved "
+                        f"for automatic resume ({next_try}/{self.cfg.max_timeout_retries})."
+                    ),
+                )
+                self.db.log_event(
+                    "INFO",
+                    nid,
+                    f"Timeout after {res.elapsed_sec:.0f}s -> saved checkpoint & re-queued to resume ({next_try}/{self.cfg.max_timeout_retries})",
+                )
+                return
+
             if role == "EXPLORE":
                 self.db.update_node_runtime(
                     nid,
