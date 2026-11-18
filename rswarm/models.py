@@ -153,6 +153,8 @@ class SwarmConfig:
     researcher_effort: str = "max"
     implementer_model: str = DEFAULT_DEEPSEEK_MODEL
     implementer_effort: str = "minimal"
+    deepen_model: str = DEFAULT_DEEPSEEK_MODEL
+    deepen_effort: str = "max"
     debugger_model: str = DEFAULT_DEEPSEEK_MODEL
     debugger_effort: str = "minimal"
     crossover_model: str = DEFAULT_DEEPSEEK_MODEL
@@ -188,13 +190,23 @@ class SwarmConfig:
         self.implementer_model = validate_model_choice(
             self.implementer_model, self.allow_model_override
         )
+        self.deepen_model = validate_model_choice(
+            self.deepen_model, self.allow_model_override
+        )
         self.debugger_model = validate_model_choice(
             self.debugger_model, self.allow_model_override
         )
         self.crossover_model = validate_model_choice(
             self.crossover_model, self.allow_model_override
         )
-        for attr in ("researcher_effort", "implementer_effort", "debugger_effort", "crossover_effort", "effort"):
+        for attr in (
+            "researcher_effort",
+            "implementer_effort",
+            "deepen_effort",
+            "debugger_effort",
+            "crossover_effort",
+            "effort",
+        ):
             val = getattr(self, attr)
             if val not in VALID_EFFORTS:
                 raise ValueError(f"{attr}='{val}' invalid; expected one of {VALID_EFFORTS}")
@@ -206,6 +218,8 @@ class SwarmConfig:
         r = (role or "").upper()
         if r == "EXPLORE":
             return self.researcher_model, self.researcher_effort
+        if r == "DEEPEN":
+            return self.deepen_model, self.deepen_effort
         if r == "DEBUG":
             return self.debugger_model, self.debugger_effort
         if r == "CROSSOVER":
@@ -216,6 +230,7 @@ class SwarmConfig:
         return {
             "researcher": {"model": self.researcher_model, "effort": self.researcher_effort},
             "implementer": {"model": self.implementer_model, "effort": self.implementer_effort},
+            "deepen": {"model": self.deepen_model, "effort": self.deepen_effort},
             "debugger": {"model": self.debugger_model, "effort": self.debugger_effort},
             "crossover": {"model": self.crossover_model, "effort": self.crossover_effort},
         }

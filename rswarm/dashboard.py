@@ -380,10 +380,11 @@ function renderAll() {
 
   document.getElementById('hdrName').textContent = `rswarm · ${meta.name || 'Research Swarm'}`;
   const rTag = rr.researcher ? shortModelTag(rr.researcher.model, rr.researcher.effort) : shortModelTag(meta.researcher_model, 'max');
+  const aTag = rr.deepen ? shortModelTag(rr.deepen.model, rr.deepen.effort) : rTag;
   const iTag = rr.implementer ? shortModelTag(rr.implementer.model, rr.implementer.effort) : shortModelTag(meta.implementer_model, 'minimal');
   const dTag = rr.debugger ? shortModelTag(rr.debugger.model, rr.debugger.effort) : iTag;
   document.getElementById('hdrSub').textContent =
-    `R: ${rTag} · I: ${iTag} · D: ${dTag} · Cap: ${meta.concurrency || '—'} · tmux: ${d.tmux_session || ''}`;
+    `R: ${rTag} · Deepen: ${aTag} · I: ${iTag} · D: ${dTag} · Cap: ${meta.concurrency || '—'}`;
   document.getElementById('kpiBase').textContent = st.baseline_score !== null && st.baseline_score !== undefined ? Number(st.baseline_score).toPrecision(6) : '—';
   document.getElementById('kpiBest').textContent = st.best_score !== null && st.best_score !== undefined ? Number(st.best_score).toPrecision(6) : '—';
   document.getElementById('kpiSpeedup').textContent = `${Number(st.best_speedup || 1).toFixed(4)}x`;
