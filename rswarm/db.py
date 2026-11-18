@@ -381,7 +381,11 @@ class SwarmDB:
             )
             return int(cur.rowcount or 0)
 
-    def claim_next_queued_node(self, preferred_island: int | None = None) -> dict[str, Any] | None:
+    def claim_next_queued_node(
+        self,
+        preferred_island: int | None = None,
+        exclude_roles: tuple[str, ...] = (),
+    ) -> dict[str, Any] | None:
         """Atomically transition the highest-priority QUEUED node to RUNNING."""
         role_priority = {
             "DEBUG": 0,
@@ -392,9 +396,16 @@ class SwarmDB:
         }
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            rows = conn.execute(
-                "SELECT * FROM nodes WHERE status='QUEUED' ORDER BY created_at ASC LIMIT 64"
-            ).fetchall()
+            if exclude_roles:
+                placeholders = ",".join("?" for _ in exclude_roles)
+                rows = conn.execute(
+                    f"SELECT * FROM nodes WHERE status='QUEUED' AND role NOT IN ({placeholders}) ORDER BY created_at ASC LIMIT 64",
+                    exclude_roles,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM nodes WHERE status='QUEUED' ORDER BY created_at ASC LIMIT 64"
+                ).fetchall()
             if not rows:
                 conn.execute("COMMIT")
                 return None

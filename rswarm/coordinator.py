@@ -52,6 +52,7 @@ class SwarmCoordinator:
         )
 
         self.active_tasks: dict[str, asyncio.Task[None]] = {}
+        self.active_roles: dict[str, str] = {}
         self.active_heavy_procs: int = 0
         self.active_lite_workers: int = 0
         self.paused: bool = False
@@ -89,6 +90,7 @@ class SwarmCoordinator:
         self.cfg = new_cfg
         self.dashboard.cfg = new_cfg
         self.eval_service.cfg = new_cfg
+        self.runner.allow_model_override = new_cfg.allow_model_override
         self.governor.max_slice_mem_gib = new_cfg.max_slice_mem_gib
         self.governor.min_avail_mem_gib = new_cfg.min_avail_mem_gib
         self.governor.max_heavy_mux_procs = new_cfg.max_heavy_mux_procs
@@ -341,6 +343,9 @@ Steps:
         islands = {int(i["island_id"]): i for i in self.db.get_islands()}
         island = islands.get(int(node["island_id"]), {"island_id": 0, "name": "main", "strategy_focus": ""})
         model_id, effort_lvl = self.cfg.model_and_effort_for_role(role)
+        # Anthropic subscription rows (`claude-*`) require `claude -p` (`claude-mux`) to forward OAuth.
+        if model_id.lower().startswith("claude-") and concrete_harness == "claude-mux-lite":
+            concrete_harness = "claude-mux"
         win_name = make_tmux_window_name(role, str(island["name"]), str(node["title"]), nid)
 
         if concrete_harness == "claude-mux-lite":
@@ -425,6 +430,7 @@ Steps:
             else:
                 self.active_heavy_procs = max(0, self.active_heavy_procs - 1)
             self.active_tasks.pop(nid, None)
+            self.active_roles.pop(nid, None)
 
     async def run(
         self,
@@ -496,13 +502,17 @@ Steps:
                             self.db.log_event("GOVERNOR", "throttle", f"Holding spawn: {reason}")
                             break
 
+                        active_exp = sum(1 for r in self.active_roles.values() if r == "EXPLORE")
+                        excl = ("EXPLORE",) if active_exp >= self.cfg.max_concurrent_researchers else ()
                         next_node = self.db.claim_next_queued_node(
-                            preferred_island=self._island_rr % max(1, self.cfg.num_islands)
+                            preferred_island=self._island_rr % max(1, self.cfg.num_islands),
+                            exclude_roles=excl,
                         )
                         if next_node is None:
                             break
                         self._island_rr += 1
                         nid = str(next_node["node_id"])
+                        self.active_roles[nid] = str(next_node["role"]).upper()
                         t = asyncio.create_task(self._run_node_worker(next_node, mode))
                         self.active_tasks[nid] = t
 
