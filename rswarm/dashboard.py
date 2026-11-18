@@ -232,12 +232,15 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div class="kpis">
-      <div class="kpi"><span class="kpi-label">Baseline (Origin)</span><span class="kpi-val" id="kpiBase">—</span></div>
+      <div class="kpi"><span class="kpi-label">Baseline</span><span class="kpi-val" id="kpiBase">—</span></div>
       <div class="kpi"><span class="kpi-label">Global Best</span><span class="kpi-val win" id="kpiBest">—</span></div>
       <div class="kpi"><span class="kpi-label">Speedup</span><span class="kpi-val win" id="kpiSpeedup">1.0000x</span></div>
-      <div class="kpi"><span class="kpi-label">Goal Progress</span><span class="kpi-val gold" id="kpiGoal">0.0%</span></div>
-      <div class="kpi"><span class="kpi-label">Active / Evals</span><span class="kpi-val cyan" id="kpiAgents">0 / 0</span></div>
-      <div class="kpi"><span class="kpi-label">Sparky Slice RAM</span><span class="kpi-val" id="kpiRam">—</span></div>
+      <div class="kpi"><span class="kpi-label">Goal</span><span class="kpi-val gold" id="kpiGoal">0.0%</span></div>
+      <div class="kpi"><span class="kpi-label">Hypotheses Created</span><span class="kpi-val cyan" id="kpiHypCreated">0</span></div>
+      <div class="kpi"><span class="kpi-label">Tested (Eval Runs)</span><span class="kpi-val win" id="kpiHypTested">0</span></div>
+      <div class="kpi"><span class="kpi-label">Testing Now</span><span class="kpi-val gold" id="kpiHypTesting">0</span></div>
+      <div class="kpi"><span class="kpi-label">Avg Eval Suite</span><span class="kpi-val cyan" id="kpiAvgEval">—</span></div>
+      <div class="kpi"><span class="kpi-label">Slice RAM</span><span class="kpi-val" id="kpiRam">—</span></div>
     </div>
   </header>
 
@@ -385,7 +388,11 @@ function renderAll() {
   document.getElementById('kpiBest').textContent = st.best_score !== null && st.best_score !== undefined ? Number(st.best_score).toPrecision(6) : '—';
   document.getElementById('kpiSpeedup').textContent = `${Number(st.best_speedup || 1).toFixed(4)}x`;
   document.getElementById('kpiGoal').textContent = `${(Number(st.best_goal_progress || 0) * 100).toFixed(1)}%`;
-  document.getElementById('kpiAgents').textContent = `${st.running || 0}/${meta.concurrency || st.running || 0} · ${st.evaluated_total || 0}`;
+  document.getElementById('kpiHypCreated').textContent = `${st.hypotheses_created ?? 0}`;
+  document.getElementById('kpiHypTested').textContent = `${st.hypotheses_tested ?? 0} (${st.eval_suite_runs ?? 0})`;
+  document.getElementById('kpiHypTesting').textContent = `${st.hypotheses_testing_now ?? 0} / ${meta.concurrency || st.running || 0}`;
+  const avgMs = Number(st.avg_eval_ms || 0);
+  document.getElementById('kpiAvgEval').textContent = avgMs >= 1000 ? `${(avgMs / 1000).toFixed(2)}s` : (avgMs > 0 ? `${avgMs.toFixed(0)}ms` : '—');
   document.getElementById('kpiRam').textContent = gov.slice_current_gib !== undefined ? `${gov.slice_current_gib} GiB` : '—';
 
   // Legend

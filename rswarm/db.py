@@ -159,11 +159,29 @@ class SwarmDB:
                     message TEXT NOT NULL,
                     created_at REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS eval_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    node_id TEXT,
+                    valid INTEGER NOT NULL,
+                    score REAL,
+                    eval_ms REAL NOT NULL,
+                    created_at REAL NOT NULL
+                );
                 """
             )
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
             if "effort_used" not in cols:
                 conn.execute("ALTER TABLE nodes ADD COLUMN effort_used TEXT DEFAULT ''")
+            existing_runs = conn.execute("SELECT COUNT(*) AS c FROM eval_runs").fetchone()["c"]
+            if int(existing_runs) == 0:
+                conn.execute(
+                    """
+                    INSERT INTO eval_runs(node_id, valid, score, eval_ms, created_at)
+                    SELECT node_id, valid, score, eval_ms, COALESCE(finished_at, created_at)
+                    FROM nodes WHERE eval_ms > 0
+                    """
+                )
 
     def set_meta(self, key: str, value: Any) -> None:
         raw = json.dumps(value)
@@ -565,6 +583,14 @@ class SwarmDB:
                 )
 
                 conn.execute(
+                    """
+                    INSERT INTO eval_runs(node_id, valid, score, eval_ms, created_at)
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (node_id, 1 if valid else 0, score, eval_ms, time.time()),
+                )
+
+                conn.execute(
                     "UPDATE islands SET eval_count = eval_count + 1 WHERE island_id=?",
                     (island_id,),
                 )
@@ -702,6 +728,7 @@ class SwarmDB:
             return int(cur.lastrowid or 0)
 
     def get_summary_stats(self) -> dict[str, Any]:
+        exp_roles = "('IMPLEMENT','DEEPEN','CROSSOVER','DEBUG')"
         with self._lock, self._connect() as conn:
             status_rows = conn.execute(
                 "SELECT status, COUNT(*) AS c FROM nodes GROUP BY status"
@@ -710,6 +737,36 @@ class SwarmDB:
             eval_total = conn.execute(
                 "SELECT COUNT(*) AS c FROM nodes WHERE score IS NOT NULL OR status IN ('BREAKTHROUGH','OBSTRUCTED','FAILED')"
             ).fetchone()["c"]
+            hyp_created = conn.execute(
+                f"SELECT COUNT(*) AS c FROM nodes WHERE role IN {exp_roles} AND status != 'REJECTED_NOVELTY'"
+            ).fetchone()["c"]
+            hyp_tested = conn.execute(
+                f"SELECT COUNT(*) AS c FROM nodes WHERE role IN {exp_roles} AND (score IS NOT NULL OR status IN ('BREAKTHROUGH','OBSTRUCTED','FAILED','EVALUATED'))"
+            ).fetchone()["c"]
+            hyp_testing_now = conn.execute(
+                f"SELECT COUNT(*) AS c FROM nodes WHERE role IN {exp_roles} AND status = 'RUNNING'"
+            ).fetchone()["c"]
+            hyp_queued = conn.execute(
+                f"SELECT COUNT(*) AS c FROM nodes WHERE role IN {exp_roles} AND status = 'QUEUED'"
+            ).fetchone()["c"]
+
+            run_row = conn.execute(
+                "SELECT COUNT(*) AS cnt, AVG(eval_ms) AS avg_ms FROM eval_runs WHERE eval_ms > 0"
+            ).fetchone()
+            eval_runs_cnt = int(run_row["cnt"] or 0)
+            avg_eval_ms = float(run_row["avg_ms"]) if run_row["avg_ms"] is not None else None
+
+            # Fallback to nodes.eval_ms + events history for runs executed prior to eval_runs table
+            ev_eval_cnt = conn.execute(
+                "SELECT COUNT(*) AS c FROM events WHERE message LIKE 'Eval valid=%'"
+            ).fetchone()["c"]
+            eval_runs_total = max(eval_runs_cnt, int(ev_eval_cnt), int(hyp_tested))
+            if avg_eval_ms is None:
+                n_avg = conn.execute(
+                    "SELECT AVG(eval_ms) AS avg_ms FROM nodes WHERE eval_ms > 0"
+                ).fetchone()["avg_ms"]
+                avg_eval_ms = float(n_avg) if n_avg is not None else 0.0
+
         meta = self.get_all_meta()
         return {
             "counts": counts,
@@ -720,6 +777,12 @@ class SwarmDB:
             "failed": counts.get("FAILED", 0),
             "novelty_rejected": counts.get("REJECTED_NOVELTY", 0),
             "evaluated_total": int(eval_total),
+            "hypotheses_created": int(hyp_created),
+            "hypotheses_tested": int(hyp_tested),
+            "hypotheses_testing_now": int(hyp_testing_now),
+            "hypotheses_queued": int(hyp_queued),
+            "eval_suite_runs": int(eval_runs_total),
+            "avg_eval_ms": round(avg_eval_ms, 2),
             "baseline_score": meta.get("baseline_score"),
             "best_score": meta.get("best_score"),
             "best_node_id": meta.get("best_node_id"),
