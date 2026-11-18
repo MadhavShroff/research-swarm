@@ -246,6 +246,10 @@ PY
                     api_state = await asyncio.to_thread(
                         lambda: json.loads(urllib.request.urlopen(f"{url}/api/state", timeout=5).read().decode())
                     )
+                    st_out = api_state["stats"]
+                    self.assertGreaterEqual(st_out["hypotheses_created"], 4)
+                    self.assertGreaterEqual(st_out["hypotheses_tested"], 2)
+                    self.assertGreater(st_out["avg_eval_ms"], 0.0)
                     nodes_by_id = {n["node_id"]: n for n in api_state["nodes"]}
                     root_n = nodes_by_id[boot["baseline_node_id"]]
                     win_n = nodes_by_id[child_id]

@@ -244,10 +244,13 @@ def _cmd_status(args: argparse.Namespace) -> int:
         f"Global Best: [bold green]{st['best_score']}[/] ([bold green]{float(st['best_speedup'] or 1.0):.4f}x[/])  |  "
         f"Target: [gold1]{st['leaderboard_target']}[/] ({cfg.direction})"
     )
+    avg_s = float(st["avg_eval_ms"] or 0.0) / 1000.0
     console.print(
-        f"  Nodes -> Evaluated: {st['evaluated_total']}  Breakthroughs: [green]{st['breakthroughs']}[/]  "
-        f"Running: [yellow]{st['running']}[/]  Queued: {st['queued']}  "
-        f"Novelty Rejected: {st['novelty_rejected']}"
+        f"  Hypotheses -> Created: [bold cyan]{st['hypotheses_created']}[/]  |  "
+        f"Tested: [bold green]{st['hypotheses_tested']}[/] ({st['eval_suite_runs']} eval suite runs)  |  "
+        f"Testing Now: [bold yellow]{st['hypotheses_testing_now']}[/]  |  "
+        f"Queued: {st['hypotheses_queued']}  |  "
+        f"Avg Eval Suite: [bold bright_cyan]{avg_s:.2f}s[/] ({st['avg_eval_ms']:.0f}ms)"
     )
     t = Table(title="Research Islands")
     t.add_column("ID")

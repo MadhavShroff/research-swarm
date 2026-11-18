@@ -101,15 +101,15 @@ def build_tui_layout(coord: "SwarmCoordinator", max_evals: int | None) -> Layout
         ),
     )
 
-    eval_done = int(stats["evaluated_total"])
-    eval_denom = max_evals if max_evals else max(20, eval_done + stats["queued"] + active_total)
+    eval_done = int(stats["hypotheses_tested"])
+    hyp_created = max(1, int(stats["hypotheses_created"]))
+    avg_s = float(stats["avg_eval_ms"] or 0.0) / 1000.0
     pb_table.add_row(
-        "3. Research Tree Evals",
-        _render_bar(eval_done / max(1, eval_denom), color="magenta"),
+        "3. Hypotheses Tested",
+        _render_bar(eval_done / hyp_created, color="magenta"),
         Text(
-            f"{eval_done:4d}/{eval_denom:<4d} evals  "
-            f"breakthroughs={stats['breakthroughs']}  obstructed={stats['obstructed']}  "
-            f"novelty_filtered={stats['novelty_rejected']}",
+            f"tested={eval_done}/{hyp_created} created  testing_now={stats['hypotheses_testing_now']}  "
+            f"suite_runs={stats['eval_suite_runs']}  avg_eval={avg_s:.2f}s  wins={stats['breakthroughs']}",
             style="magenta",
         ),
     )
