@@ -167,20 +167,17 @@ Focus: {island['strategy_focus']}
 
         if role == "EXPLORE":
             task_prompt = f"""{common_context}
-## Your Assignment (`EXPLORE` — Researcher Role)
-1. Inspect the starting candidate (`{copied_cand}`) and analyze its exact mathematical/algorithmic bottlenecks.
-2. Invent **2 to 3 distinct, concrete, high-upside hypotheses** aligned with Island `{island['name']}` that can achieve a step-change speedup/improvement toward and beyond `{stats['leaderboard_target']}`.
-3. For EACH hypothesis, execute `swarm-propose` via bash:
+## Your Assignment (`EXPLORE` — Fast 1-Turn Researcher Role)
+CRITICAL EFFICIENCY RULE: All problem rules, scoring formulas, and Bulletin updates are already above. Do NOT spend turns running `ls` or `cat` on workspace files!
+1. Immediately invent **2 to 3 distinct, concrete, high-upside hypotheses** aligned with Island `{island['name']}` targeting specific puzzle cohorts or structural mechanisms toward `{stats['leaderboard_target']}`.
+2. In your VERY FIRST `bash` tool call, invoke `swarm-propose` 2 or 3 times back-to-back:
    ```bash
-   swarm-propose \\
-     --parent-id "{node['node_id']}" \\
-     --island-id {island['island_id']} \\
-     --role IMPLEMENT \\
+   swarm-propose --parent-id "{node['node_id']}" --island-id {island['island_id']} --role IMPLEMENT \\
      --title "<concise 4-8 word title>" \\
-     --hypothesis "<exact mathematical equations, data structures, and algorithm steps to implement>" \\
-     --rationale "<quantitative estimate of expected gain and why it avoids recent Bulletin obstructions>"
+     --hypothesis "<exact mathematical construction, target N values, and algorithm steps to code>" \\
+     --rationale "<expected score reduction and why it differs from recent Bulletin items>"
    ```
-4. End with a brief summary of the directions you queued.
+3. Stop immediately after confirming `swarm-propose` succeeded.
 """
         elif role == "DEBUG":
             task_prompt = f"""{common_context}
@@ -229,15 +226,13 @@ Hypothesis:
 Rationale:
 {node['rationale']}
 
+CRITICAL EFFICIENCY RULE: All problem contracts are already above—do NOT spend turns reading `eval/` or `shared/` source files! Go straight to writing and running your solver code.
 Steps:
-1. Inspect `{copied_cand}` and any helper scripts in your working directory.
-2. Implement the hypothesis cleanly and ambitiously inside `{copied_cand}` (you may write fast C++20 `g++ -O3` or Python helpers in your workdir to generate/optimize `{copied_cand}`).
-3. Test your candidate using `swarm-eval {copied_cand}`! Read the returned score, speedup, and diagnostics.
-4. Iterate at least once if you spot an immediate parameter or structural improvement.
-5. If you discover a promising follow-up idea while coding, queue it with `swarm-propose`!
-6. Submit your final verified candidate before finishing:
+1. Write a fast Python or C++20 (`g++ -O3`) solver in your working directory that loads `{copied_cand}`, computes strictly valid improved configurations (`SAT gap >= 1e-9`) for your target instances while preserving all existing keys in `{copied_cand}` where your new solution is not strictly better, and writes the updated `{copied_cand}`.
+2. Run `swarm-eval {copied_cand}` via `bash` to verify `"valid": true` and check your new score and speedup!
+3. If `"valid": true` and score improved (or after 1 quick refinement pass), immediately submit via:
    ```bash
-   swarm-submit {copied_cand} --summary "<what changed, why it worked/failed, and final score>"
+   swarm-submit {copied_cand} --summary "<what you built, which instances improved, and verified score>"
    ```
 """
         return system_prompt, task_prompt
@@ -255,7 +250,7 @@ Steps:
             return
 
         needed = min_buffer - active_or_queued
-        for _ in range(needed):
+        for idx in range(needed):
             isl = islands[self._island_rr % len(islands)]
             self._island_rr += 1
             iid = int(isl["island_id"])
@@ -264,18 +259,35 @@ Steps:
             pscore = parent["score"] if parent else self.db.get_meta("baseline_score")
             pspeed = float(parent["speedup"] or 1.0) if parent else 1.0
 
-            self.db.create_node(
-                island_id=iid,
-                role="EXPLORE",
-                title=f"Explore wave on {isl['name']} (from {pid})",
-                hypothesis=(
-                    f"Propose 2-3 novel mathematical/algorithmic leaps along `{isl['name']}` "
-                    f"starting from `{pid}` (score={pscore}, {pspeed:.4f}x)."
-                ),
-                rationale=f"Entropic UCB selected parent {pid} for frontier expansion.",
-                parent_id=pid,
-                novelty_threshold=None,
-            )
+            # Mix 1 EXPLORE (spawns 2-3 tailored hypotheses) with 2 direct IMPLEMENT builders
+            # so builders immediately push the score while researchers expand the tree!
+            if idx % 3 == 0:
+                self.db.create_node(
+                    island_id=iid,
+                    role="EXPLORE",
+                    title=f"Explore wave on {isl['name']} (from {pid})",
+                    hypothesis=(
+                        f"Propose 2-3 novel mathematical/algorithmic leaps along `{isl['name']}` "
+                        f"starting from `{pid}` (score={pscore}, {pspeed:.4f}x)."
+                    ),
+                    rationale=f"Entropic UCB selected parent {pid} for frontier expansion.",
+                    parent_id=pid,
+                    novelty_threshold=None,
+                )
+            else:
+                cohort_hint = f"cohort-{self._island_rr % 12 + 1}"
+                self.db.create_node(
+                    island_id=iid,
+                    role="IMPLEMENT",
+                    title=f"Build {isl['name']} solver ({cohort_hint})",
+                    hypothesis=(
+                        f"Apply `{isl['name']}` ({isl['strategy_focus']}) to improve high-gap instances "
+                        f"in `{cohort_hint}` atop parent `{pid}` (score={pscore}, {pspeed:.4f}x)."
+                    ),
+                    rationale=f"Direct builder dispatch on island `{isl['name']}`.",
+                    parent_id=pid,
+                    novelty_threshold=None,
+                )
 
     async def _run_node_worker(
         self,
