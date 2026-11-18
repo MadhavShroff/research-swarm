@@ -274,6 +274,8 @@ def _cmd_scale(args: argparse.Namespace) -> int:
     cfg, db = _load_workspace_cfg(ws)
     old_c = cfg.concurrency
     cfg.concurrency = max(1, int(args.concurrency))
+    if getattr(args, "allow_model_override", False):
+        cfg.allow_model_override = True
     _atomic_save_cfg(ws, cfg)
     db.set_meta("concurrency", cfg.concurrency)
     db.log_event(
@@ -305,6 +307,8 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
         if args.effort:
             setattr(cfg, f"{r}_effort", args.effort)
 
+    if getattr(args, "allow_model_override", False):
+        cfg.allow_model_override = True
     _atomic_save_cfg(ws, cfg)
     routing = cfg.role_routing_dict()
     db.set_meta("researcher_model", cfg.researcher_model)
@@ -510,6 +514,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_setm.add_argument("--role", required=True, choices=["researcher", "implementer", "debugger", "crossover", "all"])
     p_setm.add_argument("--model", default=None, help="New claude-mux model ID (e.g. anthropic-morph-dsv41flash, anthropic-morph-kimik31, anthropic-glm-5-3).")
     p_setm.add_argument("--effort", default=None, choices=list(VALID_EFFORTS), help="New reasoning effort (minimal, low, medium, high, xhigh, max).")
+    p_setm.add_argument("--allow-model-override", action="store_true", help="Explicitly permit claude-* / Fable models despite default Sparky blocklist.")
 
     p_mods = sub.add_parser("models", help="List available claude-mux gateway models and active workspace role routing.")
     p_mods.add_argument("--workspace", default=None)
