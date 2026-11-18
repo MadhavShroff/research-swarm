@@ -8,6 +8,8 @@ import json
 import os
 import signal
 import sys
+import tempfile
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +21,13 @@ from .coordinator import SwarmCoordinator
 from .dashboard import DashboardServer
 from .db import SwarmDB
 from .governor import ResourceGovernor
+from .harnesses import _load_mux_proxy_credentials
 from .models import (
     DEFAULT_DASHBOARD_PORT,
     DEFAULT_DEEPSEEK_MODEL,
     DEFAULT_TAILSCALE_BIND,
     DEFAULT_WORKSPACE_ROOT,
+    VALID_EFFORTS,
     SwarmConfig,
     slugify,
 )
@@ -34,6 +38,22 @@ from .tui import run_with_tui
 
 def _rswarm_bin_path() -> Path:
     return (Path(__file__).resolve().parent.parent / "bin" / "rswarm").resolve()
+
+
+def _atomic_save_cfg(ws_dir: Path, cfg: SwarmConfig) -> None:
+    cfg.validate()
+    cfg_path = ws_dir / "swarm.json"
+    fd, tmp = tempfile.mkstemp(dir=str(ws_dir), prefix=".swarm.json.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(cfg.to_dict(), f, indent=2)
+        os.replace(tmp, cfg_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _load_workspace_cfg(ws_dir: Path) -> tuple[SwarmConfig, SwarmDB]:
@@ -68,8 +88,14 @@ def _build_config_from_args(args: argparse.Namespace) -> SwarmConfig:
         harness=args.harness,
         custom_harness_cmd=args.custom_cmd or "",
         researcher_model=args.researcher_model,
+        researcher_effort=args.researcher_effort,
         implementer_model=args.implementer_model,
-        effort=args.effort,
+        implementer_effort=args.implementer_effort,
+        debugger_model=args.debugger_model or args.implementer_model,
+        debugger_effort=args.debugger_effort,
+        crossover_model=args.crossover_model or args.researcher_model,
+        crossover_effort=args.crossover_effort,
+        effort=args.implementer_effort,
         concurrency=args.concurrency,
         max_heavy_mux_procs=args.max_heavy_procs,
         eval_workers=args.eval_workers,
@@ -243,6 +269,101 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_scale(args: argparse.Namespace) -> int:
+    ws = Path(args.workspace).expanduser().resolve()
+    cfg, db = _load_workspace_cfg(ws)
+    old_c = cfg.concurrency
+    cfg.concurrency = max(1, int(args.concurrency))
+    _atomic_save_cfg(ws, cfg)
+    db.set_meta("concurrency", cfg.concurrency)
+    db.log_event(
+        "INFO",
+        "cli-scale",
+        f"Non-destructive live concurrency updated: {old_c} -> {cfg.concurrency} (in-flight agents finish uninterrupted)",
+    )
+    Console().print(
+        f"[bold green]Updated live concurrency:[/] [cyan]{old_c}[/] -> [bold bright_green]{cfg.concurrency}[/] "
+        f"(active in-flight agents continue uninterrupted; new spawns respect {cfg.concurrency})."
+    )
+    return 0
+
+
+def _cmd_set_model(args: argparse.Namespace) -> int:
+    ws = Path(args.workspace).expanduser().resolve()
+    cfg, db = _load_workspace_cfg(ws)
+    if not args.model and not args.effort:
+        raise ValueError("Specify at least `--model <id>` or `--effort <level>`.")
+
+    roles = (
+        ["researcher", "implementer", "debugger", "crossover"]
+        if args.role == "all"
+        else [args.role]
+    )
+    for r in roles:
+        if args.model:
+            setattr(cfg, f"{r}_model", args.model)
+        if args.effort:
+            setattr(cfg, f"{r}_effort", args.effort)
+
+    _atomic_save_cfg(ws, cfg)
+    routing = cfg.role_routing_dict()
+    db.set_meta("researcher_model", cfg.researcher_model)
+    db.set_meta("implementer_model", cfg.implementer_model)
+    db.set_meta("role_routing", routing)
+    summary = ", ".join(f"{r}={routing[r]['model']}[{routing[r]['effort']}]" for r in roles)
+    db.log_event("INFO", "cli-model", f"Live role routing updated: {summary}")
+
+    console = Console()
+    console.print(f"[bold green]Updated live role routing ({ws.name}):[/] {summary}")
+    console.print("Every newly spawned agent of those roles will immediately use this configuration.")
+    return 0
+
+
+def _cmd_models(args: argparse.Namespace) -> int:
+    console = Console()
+    try:
+        base_url, token = _load_mux_proxy_credentials()
+        req = urllib.request.Request(
+            f"{base_url}/v1/models",
+            headers={"X-Glm-Proxy-Token": token},
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            rows = json.loads(resp.read().decode()).get("data") or []
+    except Exception as exc:
+        rows = []
+        console.print(f"[yellow]Could not query live mux gateway /v1/models ({exc}).[/]")
+
+    if rows:
+        mt = Table(title="Available claude-mux Gateway Models")
+        mt.add_column("Model ID", style="bold cyan")
+        mt.add_column("Display Name", style="white")
+        for r in rows:
+            mid = str(r.get("id", ""))
+            if mid.startswith(("claude-", "fable", "astra", "anthropic-gpt-")):
+                continue
+            mt.add_row(mid, str(r.get("display_name") or mid))
+        console.print(mt)
+
+    if args.workspace:
+        ws = Path(args.workspace).expanduser().resolve()
+        cfg, _ = _load_workspace_cfg(ws)
+        rt = Table(title=f"Active Per-Role Routing ({cfg.name} · concurrency={cfg.concurrency})")
+        rt.add_column("Agent Role", style="bold magenta")
+        rt.add_column("Tree Node Types", style="dim")
+        rt.add_column("Mux Model ID", style="bold green")
+        rt.add_column("Reasoning Effort", style="bold gold1")
+        role_nodes = {
+            "researcher": "EXPLORE (Hypothesis Creator)",
+            "implementer": "IMPLEMENT, DEEPEN (Builder / Executor)",
+            "debugger": "DEBUG (Tester / Repairer)",
+            "crossover": "CROSSOVER (Cross-Island Synthesizer)",
+        }
+        for rname, spec in cfg.role_routing_dict().items():
+            rt.add_row(rname, role_nodes[rname], spec["model"], spec["effort"])
+        console.print(rt)
+    return 0
+
+
 async def _cmd_agent_rpc(args: argparse.Namespace) -> int:
     ws = Path(args.workspace or os.environ.get("RSWARM_WORKSPACE", "")).expanduser().resolve()
     node_id = getattr(args, "node_id", None) or os.environ.get("RSWARM_NODE_ID")
@@ -316,10 +437,15 @@ def _add_shared_init_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--target", type=float, default=None, help="Leaderboard #1 or goal score to beat.")
     p.add_argument("--harness", default="claude-mux-scale", choices=["claude-mux", "claude-mux-scale", "claude-mux-lite", "custom"])
     p.add_argument("--custom-cmd", default="", help="Command template for --harness custom ({prompt_file}, {model}, {workdir}).")
-    p.add_argument("--researcher-model", default=DEFAULT_DEEPSEEK_MODEL, help="Mux model ID for Researcher agents.")
-    p.add_argument("--implementer-model", default=DEFAULT_DEEPSEEK_MODEL, help="Mux model ID for Implementer/Debugger agents.")
-    p.add_argument("--effort", default="low", choices=["low", "medium", "high", "xhigh", "max"])
-    p.add_argument("--concurrency", type=int, default=16, help="Max parallel coding/research agents (supports 100-300+).")
+    p.add_argument("--researcher-model", default=DEFAULT_DEEPSEEK_MODEL, help="Mux model ID for Researcher (EXPLORE) agents.")
+    p.add_argument("--researcher-effort", default="max", choices=list(VALID_EFFORTS), help="Effort for Researcher agents (default: max).")
+    p.add_argument("--implementer-model", default=DEFAULT_DEEPSEEK_MODEL, help="Mux model ID for Implementer/Deepen agents.")
+    p.add_argument("--implementer-effort", default="minimal", choices=list(VALID_EFFORTS), help="Effort for Implementer agents (default: minimal).")
+    p.add_argument("--debugger-model", default=None, help="Mux model ID for Debugger agents (defaults to implementer-model).")
+    p.add_argument("--debugger-effort", default="minimal", choices=list(VALID_EFFORTS), help="Effort for Debugger agents (default: minimal).")
+    p.add_argument("--crossover-model", default=None, help="Mux model ID for Crossover agents (defaults to researcher-model).")
+    p.add_argument("--crossover-effort", default="high", choices=list(VALID_EFFORTS), help="Effort for Crossover agents (default: high).")
+    p.add_argument("--concurrency", type=int, default=11, help="Max parallel coding/research agents.")
     p.add_argument("--max-heavy-procs", type=int, default=24, help="Max full claude-mux Node CLI OS processes before bursting onto mux-lite.")
     p.add_argument("--eval-workers", type=int, default=4, help="Max concurrent local evaluation/benchmark workers.")
     p.add_argument("--islands", type=int, default=5, help="Number of independent Research Directions (Islands).")
@@ -375,6 +501,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_stat = sub.add_parser("status", help="Print current research tree, island elites, and speedup summary.")
     p_stat.add_argument("--workspace", required=True)
 
+    p_scale = sub.add_parser("scale", help="Live non-destructive concurrency scaling on a running workspace.")
+    p_scale.add_argument("--workspace", required=True)
+    p_scale.add_argument("--concurrency", type=int, required=True, help="New max parallel agent count.")
+
+    p_setm = sub.add_parser("set-model", help="Live hot-switch model and/or effort for a specific agent role.")
+    p_setm.add_argument("--workspace", required=True)
+    p_setm.add_argument("--role", required=True, choices=["researcher", "implementer", "debugger", "crossover", "all"])
+    p_setm.add_argument("--model", default=None, help="New claude-mux model ID (e.g. anthropic-morph-dsv41flash, anthropic-morph-kimik31, anthropic-glm-5-3).")
+    p_setm.add_argument("--effort", default=None, choices=list(VALID_EFFORTS), help="New reasoning effort (minimal, low, medium, high, xhigh, max).")
+
+    p_mods = sub.add_parser("models", help="List available claude-mux gateway models and active workspace role routing.")
+    p_mods.add_argument("--workspace", default=None)
+
     p_ag = sub.add_parser("agent", help="Internal skill callbacks invoked by swarm agents (`swarm-*`).")
     ag_sub = p_ag.add_subparsers(dest="agent_cmd", required=True)
 
@@ -422,6 +561,12 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_cmd_dashboard(args))
     if args.cmd == "status":
         return _cmd_status(args)
+    if args.cmd == "scale":
+        return _cmd_scale(args)
+    if args.cmd == "set-model":
+        return _cmd_set_model(args)
+    if args.cmd == "models":
+        return _cmd_models(args)
     if args.cmd == "agent":
         return asyncio.run(_cmd_agent_rpc(args))
     return 1

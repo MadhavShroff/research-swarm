@@ -357,21 +357,35 @@ function getAncestors(nodeId, nodeById) {
   return set;
 }
 
+function shortModelTag(modelId, effortLvl) {
+  if (!modelId) return '';
+  const m = String(modelId)
+    .replace(/^anthropic-morph-/, '')
+    .replace(/^anthropic-local-/, 'local-')
+    .replace(/^anthropic-/, '');
+  const e = effortLvl ? `·${effortLvl === 'minimal' ? 'min' : effortLvl}` : '';
+  return `${m}${e}`;
+}
+
 function renderAll() {
   const d = state.data;
   if (!d) return;
   const st = d.stats || {};
   const meta = d.meta || {};
   const gov = d.governor || {};
+  const rr = meta.role_routing || {};
 
   document.getElementById('hdrName').textContent = `rswarm · ${meta.name || 'Research Swarm'}`;
+  const rTag = rr.researcher ? shortModelTag(rr.researcher.model, rr.researcher.effort) : shortModelTag(meta.researcher_model, 'max');
+  const iTag = rr.implementer ? shortModelTag(rr.implementer.model, rr.implementer.effort) : shortModelTag(meta.implementer_model, 'minimal');
+  const dTag = rr.debugger ? shortModelTag(rr.debugger.model, rr.debugger.effort) : iTag;
   document.getElementById('hdrSub').textContent =
-    `Model: ${meta.researcher_model || 'DeepSeek'} · Harness: ${meta.harness || 'claude-mux'} · tmux: ${d.tmux_session || ''}`;
+    `R: ${rTag} · I: ${iTag} · D: ${dTag} · Cap: ${meta.concurrency || '—'} · tmux: ${d.tmux_session || ''}`;
   document.getElementById('kpiBase').textContent = st.baseline_score !== null && st.baseline_score !== undefined ? Number(st.baseline_score).toPrecision(6) : '—';
   document.getElementById('kpiBest').textContent = st.best_score !== null && st.best_score !== undefined ? Number(st.best_score).toPrecision(6) : '—';
   document.getElementById('kpiSpeedup').textContent = `${Number(st.best_speedup || 1).toFixed(4)}x`;
   document.getElementById('kpiGoal').textContent = `${(Number(st.best_goal_progress || 0) * 100).toFixed(1)}%`;
-  document.getElementById('kpiAgents').textContent = `${st.running || 0} / ${st.evaluated_total || 0}`;
+  document.getElementById('kpiAgents').textContent = `${st.running || 0}/${meta.concurrency || st.running || 0} · ${st.evaluated_total || 0}`;
   document.getElementById('kpiRam').textContent = gov.slice_current_gib !== undefined ? `${gov.slice_current_gib} GiB` : '—';
 
   // Legend
@@ -381,7 +395,7 @@ function renderAll() {
   legEl.innerHTML = islands.map(i =>
     `<span class="leg-item"><span class="leg-swatch" style="background:${i.color}"></span>` +
     `<b>${i.name}</b> (${Number(i.best_speedup || 1).toFixed(3)}x)</span>`
-  ).join('');
+  ).join('') + `<span class="leg-item" style="margin-left:8px;color:#fbbf24;">⚡ <b>Pulsing Gold</b> = Live Running Agent</span>`;
 
   renderRadialSvg(d, islMap);
   renderDiaryList(d);
@@ -486,8 +500,12 @@ function renderRadialSvg(d, islMap) {
     if (isBase) {
       html += `<text x="0" y="27" text-anchor="middle" fill="#f8fafc" font-size="11" font-weight="700">ORIGIN 1.00x</text>`;
     } else if ((isWin || isRun || isSel) && !dimmed) {
+      const mTag = shortModelTag(n.model_used, n.effort_used);
+      const mBracket = mTag ? ` [${mTag}]` : '';
       const spTxt = n.valid && n.speedup ? `${Number(n.speedup).toFixed(3)}x` : n.role;
-      const lbl = isRun && n.tmux_window ? `⚡ ${n.tmux_window}` : `${spTxt} · ${(n.title || '').slice(0, 22)}`;
+      const lbl = isRun && n.tmux_window
+        ? `⚡ ${n.tmux_window}${mBracket}`
+        : `${spTxt}${mBracket} · ${(n.title || '').slice(0, 20)}`;
       html += `<text x="${(n._x + 9).toFixed(1)}" y="${(n._y + 3).toFixed(1)}" fill="#e2e8f0" font-size="10.5" font-weight="600" pointer-events="none">${escapeHtml(lbl)}</text>`;
     }
   }
@@ -496,17 +514,21 @@ function renderRadialSvg(d, islMap) {
 }
 
 function renderDiaryList(d) {
+  const nodeMap = new Map((d.nodes || []).map(n => [n.node_id, n]));
   const entries = (d.diary || []).filter(e => state.diaryFilter === 'ALL' || e.entry_type === state.diaryFilter);
   document.getElementById('diaryCount').textContent = `${entries.length} entries`;
   const listEl = document.getElementById('diaryList');
   listEl.innerHTML = entries.map(e => {
     const sel = e.node_id && e.node_id === state.selectedNodeId ? 'selected' : '';
+    const nd = e.node_id ? nodeMap.get(e.node_id) : null;
+    const mTag = nd ? shortModelTag(nd.model_used, nd.effort_used) : '';
     const spBadge = e.speedup ? `${Number(e.speedup).toFixed(4)}x` : '';
     const ts = new Date(e.created_at * 1000).toLocaleTimeString();
+    const rightMeta = [mTag ? `[${mTag}]` : '', spBadge, ts].filter(Boolean).join(' · ');
     return `<div class="diary-card ${e.entry_type} ${sel}" data-nid="${e.node_id || ''}">
       <div class="dc-top">
         <span class="dc-type ${e.entry_type}">${e.entry_type}</span>
-        <span>${spBadge} · ${ts}</span>
+        <span>${escapeHtml(rightMeta)}</span>
       </div>
       <div class="dc-title">${escapeHtml(e.title)}</div>
       <div class="dc-body">${escapeHtml(e.body)}</div>
@@ -539,8 +561,10 @@ async function selectNode(nodeId) {
           <div class="kv-cell"><div class="kv-k">Parent ID</div><div class="kv-v">${escapeHtml(n.parent_id || 'ROOT')}</div></div>
           <div class="kv-cell"><div class="kv-k">Verified Score</div><div class="kv-v" style="color:var(--win)">${n.score !== null ? n.score : '—'}</div></div>
           <div class="kv-cell"><div class="kv-k">Speedup vs Origin</div><div class="kv-v" style="color:var(--win)">${Number(n.speedup || 0).toFixed(4)}x</div></div>
+          <div class="kv-cell"><div class="kv-k">Model Used</div><div class="kv-v" style="color:#c084fc;font-size:11.5px">${escapeHtml(n.model_used || '—')}</div></div>
+          <div class="kv-cell"><div class="kv-k">Reasoning Effort</div><div class="kv-v" style="color:var(--gold);font-size:11.5px">${escapeHtml(n.effort_used || '—')}</div></div>
           <div class="kv-cell"><div class="kv-k">tmux Window</div><div class="kv-v" style="color:var(--accent);font-size:11.5px">${escapeHtml(n.tmux_window || '—')}</div></div>
-          <div class="kv-cell"><div class="kv-k">Harness / Model</div><div class="kv-v" style="font-size:11px">${escapeHtml(n.harness_used || '—')}</div></div>
+          <div class="kv-cell"><div class="kv-k">Harness Mode</div><div class="kv-v" style="font-size:11px">${escapeHtml(n.harness_used || '—')}</div></div>
         </div>
       </div>
       <div class="sec-box">
@@ -729,6 +753,14 @@ class DashboardServer:
 
     def _build_state_payload(self) -> dict[str, Any]:
         payload = self.db.export_dashboard_state()
+        cfg_file = self.ws / "swarm.json"
+        if cfg_file.is_file():
+            try:
+                live_cfg = SwarmConfig.from_dict(json.loads(cfg_file.read_text()))
+                payload["meta"]["concurrency"] = live_cfg.concurrency
+                payload["meta"]["role_routing"] = live_cfg.role_routing_dict()
+            except Exception:
+                pass
         payload["governor"] = self.governor.sample().to_dict()
         payload["tmux_session"] = self.tmux_pool.session_name
         payload["tmux_windows"] = self.tmux_pool.list_live_window_names()

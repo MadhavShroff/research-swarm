@@ -13,6 +13,7 @@ DEFAULT_DEEPSEEK_MODEL = "anthropic-morph-dsv41flash"
 DEFAULT_WORKSPACE_ROOT = Path.home() / "research-workspaces"
 DEFAULT_TAILSCALE_BIND = os.environ.get("RSWARM_DASHBOARD_HOST", "0.0.0.0")
 DEFAULT_DASHBOARD_PORT = 8988
+VALID_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 # Standing Sparky model safety blocklist (docs/AGENT-RULES.md + founder order).
 FORBIDDEN_MODEL_PREFIXES = (
@@ -149,9 +150,15 @@ class SwarmConfig:
     harness: str = "claude-mux-scale"
     custom_harness_cmd: str = ""
     researcher_model: str = DEFAULT_DEEPSEEK_MODEL
+    researcher_effort: str = "max"
     implementer_model: str = DEFAULT_DEEPSEEK_MODEL
-    effort: str = "low"
-    concurrency: int = 16
+    implementer_effort: str = "minimal"
+    debugger_model: str = DEFAULT_DEEPSEEK_MODEL
+    debugger_effort: str = "minimal"
+    crossover_model: str = DEFAULT_DEEPSEEK_MODEL
+    crossover_effort: str = "high"
+    effort: str = "minimal"
+    concurrency: int = 11
     max_heavy_mux_procs: int = 24
     eval_workers: int = 4
     num_islands: int = 5
@@ -180,9 +187,37 @@ class SwarmConfig:
         self.implementer_model = validate_model_choice(
             self.implementer_model, self.allow_model_override
         )
+        self.debugger_model = validate_model_choice(
+            self.debugger_model, self.allow_model_override
+        )
+        self.crossover_model = validate_model_choice(
+            self.crossover_model, self.allow_model_override
+        )
+        for attr in ("researcher_effort", "implementer_effort", "debugger_effort", "crossover_effort", "effort"):
+            val = getattr(self, attr)
+            if val not in VALID_EFFORTS:
+                raise ValueError(f"{attr}='{val}' invalid; expected one of {VALID_EFFORTS}")
         self.concurrency = max(1, int(self.concurrency))
         self.eval_workers = max(1, int(self.eval_workers))
         self.num_islands = max(1, int(self.num_islands))
+
+    def model_and_effort_for_role(self, role: str) -> tuple[str, str]:
+        r = (role or "").upper()
+        if r == "EXPLORE":
+            return self.researcher_model, self.researcher_effort
+        if r == "DEBUG":
+            return self.debugger_model, self.debugger_effort
+        if r == "CROSSOVER":
+            return self.crossover_model, self.crossover_effort
+        return self.implementer_model, self.implementer_effort
+
+    def role_routing_dict(self) -> dict[str, dict[str, str]]:
+        return {
+            "researcher": {"model": self.researcher_model, "effort": self.researcher_effort},
+            "implementer": {"model": self.implementer_model, "effort": self.implementer_effort},
+            "debugger": {"model": self.debugger_model, "effort": self.debugger_effort},
+            "crossover": {"model": self.crossover_model, "effort": self.crossover_effort},
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

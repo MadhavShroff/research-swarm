@@ -37,6 +37,44 @@ class TestRswarmCore(unittest.IsolatedAsyncioTestCase):
             validate_harness_choice("agy")
         self.assertEqual(validate_harness_choice("claude-mux-scale"), "claude-mux-scale")
 
+    def test_live_role_model_routing_and_non_destructive_scale(self) -> None:
+        from rswarm.cli import main as cli_main
+        from rswarm.coordinator import SwarmCoordinator
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "ws-live"
+            ws.mkdir(parents=True)
+            cfg = SwarmConfig(name="live-test", workspace_dir=str(ws), brief="Test brief")
+            self.assertEqual(cfg.model_and_effort_for_role("EXPLORE"), ("anthropic-morph-dsv41flash", "max"))
+            self.assertEqual(cfg.model_and_effort_for_role("IMPLEMENT"), ("anthropic-morph-dsv41flash", "minimal"))
+            self.assertEqual(cfg.model_and_effort_for_role("DEBUG"), ("anthropic-morph-dsv41flash", "minimal"))
+
+            (ws / "swarm.json").write_text(json.dumps(cfg.to_dict(), indent=2))
+            db = SwarmDB(ws / "state" / "swarm.db")
+            coord = SwarmCoordinator(cfg, db)
+            coord._cfg_mtime -= 5.0  # ensure mtime delta triggers reload
+
+            # Live non-destructive scale + live per-role model switch
+            self.assertEqual(cli_main(["scale", "--workspace", str(ws), "--concurrency", "11"]), 0)
+            self.assertEqual(
+                cli_main([
+                    "set-model", "--workspace", str(ws),
+                    "--role", "researcher", "--model", "anthropic-morph-kimik31", "--effort", "max",
+                ]),
+                0,
+            )
+            self.assertEqual(
+                cli_main([
+                    "set-model", "--workspace", str(ws),
+                    "--role", "implementer", "--model", "anthropic-morph-dsv41flash", "--effort", "minimal",
+                ]),
+                0,
+            )
+            coord._reload_live_config_if_changed()
+            self.assertEqual(coord.cfg.concurrency, 11)
+            self.assertEqual(coord.cfg.model_and_effort_for_role("EXPLORE"), ("anthropic-morph-kimik31", "max"))
+            self.assertEqual(coord.cfg.model_and_effort_for_role("IMPLEMENT"), ("anthropic-morph-dsv41flash", "minimal"))
+
     def test_speedup_and_window_naming(self) -> None:
         sp, prog = compute_speedup_and_progress(28.0, 28.93767, 27.60, "minimize")
         self.assertGreater(sp, 1.03)

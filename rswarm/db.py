@@ -106,6 +106,7 @@ class SwarmDB:
                     tmux_window TEXT DEFAULT '',
                     harness_used TEXT DEFAULT '',
                     model_used TEXT DEFAULT '',
+                    effort_used TEXT DEFAULT '',
                     visits INTEGER DEFAULT 0,
                     max_subtree_speedup REAL DEFAULT 1.0,
                     created_at REAL NOT NULL,
@@ -160,6 +161,9 @@ class SwarmDB:
                 );
                 """
             )
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+            if "effort_used" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN effort_used TEXT DEFAULT ''")
 
     def set_meta(self, key: str, value: Any) -> None:
         raw = json.dumps(value)
@@ -419,6 +423,7 @@ class SwarmDB:
         tmux_window: str | None = None,
         harness_used: str | None = None,
         model_used: str | None = None,
+        effort_used: str | None = None,
         status: str | None = None,
         diagnostics: str | None = None,
         code_summary: str | None = None,
@@ -436,6 +441,9 @@ class SwarmDB:
         if model_used is not None:
             sets.append("model_used=?")
             vals.append(model_used)
+        if effort_used is not None:
+            sets.append("effort_used=?")
+            vals.append(effort_used)
         if status is not None:
             sets.append("status=?")
             vals.append(status)
