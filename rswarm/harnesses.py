@@ -7,9 +7,12 @@ import dataclasses
 import json
 import os
 import shlex
+import socket
+import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -157,6 +160,7 @@ class HarnessRunner:
         system_prompt: str,
         task_prompt: str,
         timeout_sec: int,
+        http_timeout_sec: int = 1200,
         allow_eval_write: bool = False,
     ) -> HarnessResult:
         validate_model_choice(model_id, self.allow_model_override)
@@ -175,6 +179,7 @@ class HarnessRunner:
                 task_prompt=task_prompt,
                 log_path=log_path,
                 timeout_sec=timeout_sec,
+                http_timeout_sec=http_timeout_sec,
             )
         if harness_mode == "claude-mux-lite":
             return await self._run_claude_mux_lite(
@@ -187,6 +192,7 @@ class HarnessRunner:
                 task_prompt=task_prompt,
                 log_path=log_path,
                 timeout_sec=timeout_sec,
+                http_timeout_sec=http_timeout_sec,
                 allow_eval_write=allow_eval_write,
             )
         if harness_mode == "custom":
@@ -214,14 +220,23 @@ class HarnessRunner:
         task_prompt: str,
         log_path: Path,
         timeout_sec: int,
+        http_timeout_sec: int = 1200,
     ) -> HarnessResult:
         prompt_file = workdir / ".rswarm_prompt.md"
+        resume_file = workdir / ".rswarm_resume_prompt.md"
         sys_file = workdir / ".rswarm_system.md"
         script_file = workdir / ".rswarm_exec.sh"
         exit_file = workdir / ".rswarm_exit"
         cli_effort = "low" if effort == "minimal" else effort
+        api_ms = max(1800000, int(http_timeout_sec) * 1000)
+        session_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"rswarm:{self.workspace_dir}:{node_id}"))
 
         prompt_file.write_text(task_prompt)
+        resume_file.write_text(
+            "Session resumed after timeout or rate-limit wait. "
+            "All files in your working directory and your prior steps are intact. "
+            "Continue immediately from where you left off, run `swarm-eval`, and `swarm-submit` your candidate."
+        )
         sys_file.write_text(system_prompt)
 
         # Source llm-provider-proxy.env inside bash so proxy token never appears in ps/tmux argv!
@@ -247,7 +262,7 @@ export ANTHROPIC_CUSTOM_HEADERS="X-Glm-Proxy-Token: ${{TOKEN}}"
 export CLAUDE_MUX_ROUTING_MARKER="dgx-claude-mux-routing-v1"
 export DISABLE_AUTOUPDATER=1
 export DISABLE_UPDATES=1
-export API_TIMEOUT_MS=1800000
+export API_TIMEOUT_MS={api_ms}
 export NODE_OPTIONS="--max-old-space-size=192"
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
@@ -258,17 +273,32 @@ export RSWARM_NODE_ID={shlex.quote(node_id)}
 export RSWARM_SOCK={shlex.quote(str(self.workspace_dir / 'state' / 'rswarm.sock'))}
 
 cd {shlex.quote(str(workdir))}
-printf '=== [claude-mux] node=%s window=%s model=%s ===\\n' {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(model_id)}
-exec nice -n 15 claude \\
-  --model {shlex.quote(model_id)} \\
-  --effort {shlex.quote(cli_effort)} \\
-  --dangerously-skip-permissions \\
-  --no-session-persistence \\
-  --setting-sources "" \\
-  --strict-mcp-config \\
-  --mcp-config '{{"mcpServers":{{}}}}' \\
-  --append-system-prompt-file {shlex.quote(str(sys_file))} \\
-  -p "$(cat {shlex.quote(str(prompt_file))})"
+SESSION_ID={shlex.quote(session_uuid)}
+if compgen -G "$HOME/.claude/projects/*/${{SESSION_ID}}.jsonl" >/dev/null 2>&1; then
+  printf '=== [claude-mux RESUME] node=%s window=%s model=%s session=%s ===\\n' {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(model_id)} "$SESSION_ID"
+  exec nice -n 15 claude \\
+    --resume "$SESSION_ID" \\
+    --model {shlex.quote(model_id)} \\
+    --effort {shlex.quote(cli_effort)} \\
+    --dangerously-skip-permissions \\
+    --setting-sources "" \\
+    --strict-mcp-config \\
+    --mcp-config '{{"mcpServers":{{}}}}' \\
+    --append-system-prompt-file {shlex.quote(str(sys_file))} \\
+    -p "$(cat {shlex.quote(str(resume_file))})"
+else
+  printf '=== [claude-mux] node=%s window=%s model=%s session=%s ===\\n' {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(model_id)} "$SESSION_ID"
+  exec nice -n 15 claude \\
+    --session-id "$SESSION_ID" \\
+    --model {shlex.quote(model_id)} \\
+    --effort {shlex.quote(cli_effort)} \\
+    --dangerously-skip-permissions \\
+    --setting-sources "" \\
+    --strict-mcp-config \\
+    --mcp-config '{{"mcpServers":{{}}}}' \\
+    --append-system-prompt-file {shlex.quote(str(sys_file))} \\
+    -p "$(cat {shlex.quote(str(prompt_file))})"
+fi
 """
         script_file.write_text(script_body)
         script_file.chmod(0o700)
@@ -471,31 +501,79 @@ exec nice -n 15 {rendered}
         task_prompt: str,
         log_path: Path,
         timeout_sec: int,
+        http_timeout_sec: int = 1200,
         allow_eval_write: bool = False,
     ) -> HarnessResult:
         """Ultra-low-RAM (~2 MiB) coding agent speaking Anthropic /v1/messages via llm-provider-proxy."""
         base_url, token = _load_mux_proxy_credentials()
         t0 = time.monotonic()
+        ckpt_path = workdir / ".rswarm_checkpoint.json"
 
         def _append_log(text: str) -> None:
             with log_path.open("a", encoding="utf-8") as f:
                 f.write(text + "\n")
 
-        _append_log(f"=== [claude-mux-lite] node={node_id} window={window_name} model={model_id} ===")
-        wid = await self.tmux_pool.open_stream_window(window_name, node_id, log_path)
+        def _save_checkpoint(msgs: list[dict[str, Any]], completed_turns: int, ftext: str) -> None:
+            doc = {
+                "messages": msgs,
+                "completed_turns": completed_turns,
+                "final_text": ftext,
+                "updated_at": time.time(),
+            }
+            fd, tmp = tempfile.mkstemp(dir=str(workdir), prefix=".ckpt.")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as cf:
+                    json.dump(doc, cf)
+                os.replace(tmp, ckpt_path)
+            except OSError:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
         messages: list[dict[str, Any]] = [{"role": "user", "content": task_prompt}]
         final_text = ""
+        start_turn = 1
+        if ckpt_path.is_file():
+            try:
+                ckpt = json.loads(ckpt_path.read_text(encoding="utf-8"))
+                loaded_msgs = ckpt.get("messages")
+                if isinstance(loaded_msgs, list) and loaded_msgs:
+                    messages = loaded_msgs
+                    start_turn = int(ckpt.get("completed_turns") or 0) + 1
+                    final_text = str(ckpt.get("final_text") or "")
+                    if messages[-1].get("role") != "user":
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Session resumed after timeout or rate-limit wait. "
+                                    "All files in your working directory are intact; continue from where you left off."
+                                ),
+                            }
+                        )
+                    _append_log(
+                        f"=== [claude-mux-lite RESUME] node={node_id} from turn={start_turn} model={model_id} ==="
+                    )
+            except Exception as exc:
+                _append_log(f"[WARN] Could not parse checkpoint ({exc}); starting fresh.")
+
+        if start_turn == 1:
+            _append_log(f"=== [claude-mux-lite] node={node_id} window={window_name} model={model_id} ===")
+
+        wid = await self.tmux_pool.open_stream_window(window_name, node_id, log_path)
         timed_out = False
         exit_code = 0
+        max_turns = max(24, start_turn + 12)
 
         try:
-            for turn in range(1, 20):
+            for turn in range(start_turn, max_turns + 1):
                 rem = timeout_sec - (time.monotonic() - t0)
                 if rem <= 2.0:
                     timed_out = True
                     exit_code = 124
-                    _append_log(f"[TIMEOUT] Agent exceeded {timeout_sec}s wall-clock budget.")
+                    _save_checkpoint(messages, turn - 1, final_text)
+                    _append_log(f"[TIMEOUT] Agent exceeded {timeout_sec}s budget; checkpoint saved at turn {turn - 1}.")
                     break
 
                 payload: dict[str, Any] = {
@@ -511,25 +589,69 @@ exec nice -n 15 {rendered}
                 else:
                     payload["output_config"] = {"effort": effort}
 
-                try:
-                    resp = await asyncio.to_thread(
-                        self._call_mux_http_sync,
-                        base_url,
-                        token,
-                        payload,
-                        min(rem, 360.0),
-                    )
-                except urllib.error.HTTPError as he:
-                    err_body = he.read().decode("utf-8", errors="replace")[:500]
-                    _append_log(f"[HTTP {he.code}] {err_body}")
-                    if he.code in (429, 502, 503, 504) and rem > 15:
-                        await asyncio.sleep(4.0)
-                        continue
-                    exit_code = 1
-                    break
-                except Exception as exc:
-                    _append_log(f"[MUX ERROR] {exc}")
-                    exit_code = 1
+                resp: dict[str, Any] | None = None
+                attempt = 0
+                while True:
+                    attempt += 1
+                    rem = timeout_sec - (time.monotonic() - t0)
+                    if rem <= 2.0:
+                        timed_out = True
+                        exit_code = 124
+                        _save_checkpoint(messages, turn - 1, final_text)
+                        _append_log(
+                            f"[TIMEOUT] Agent reached {timeout_sec}s window during rate-limit/API wait; checkpoint saved."
+                        )
+                        break
+                    call_timeout = min(rem, float(http_timeout_sec))
+                    try:
+                        resp = await asyncio.to_thread(
+                            self._call_mux_http_sync,
+                            base_url,
+                            token,
+                            payload,
+                            call_timeout,
+                        )
+                        break
+                    except urllib.error.HTTPError as he:
+                        err_body = he.read().decode("utf-8", errors="replace")[:500]
+                        _append_log(f"[HTTP {he.code} turn={turn} attempt={attempt}] {err_body}")
+                        rem_after = timeout_sec - (time.monotonic() - t0)
+                        if he.code in (408, 409, 425, 429, 500, 502, 503, 504, 529) and rem_after > 2.5:
+                            retry_hdr = he.headers.get("Retry-After") if he.headers else None
+                            try:
+                                wait_s = float(retry_hdr) if retry_hdr is not None else min(30.0, 4.0 * (1.6 ** min(attempt - 1, 5)))
+                            except ValueError:
+                                wait_s = min(30.0, 4.0 * (1.6 ** min(attempt - 1, 5)))
+                            if wait_s + 1.2 < rem_after:
+                                wait_s = max(1.0, min(wait_s, 45.0))
+                                _append_log(f"[RETRY] Rate-limited/busy (HTTP {he.code}); sleeping {wait_s:.1f}s and continuing turn {turn}...")
+                                await asyncio.sleep(wait_s)
+                                continue
+                        if he.code in (408, 409, 425, 429, 500, 502, 503, 504, 529):
+                            timed_out = True
+                            exit_code = 124
+                            _save_checkpoint(messages, turn - 1, final_text)
+                        else:
+                            exit_code = 1
+                        break
+                    except (TimeoutError, socket.timeout, urllib.error.URLError, ConnectionError, OSError) as exc:
+                        _append_log(f"[TRANSIENT MUX WAIT turn={turn} attempt={attempt}] {exc}")
+                        rem_after = timeout_sec - (time.monotonic() - t0)
+                        if rem_after > 10.0:
+                            wait_s = min(20.0, rem_after - 4.0, 4.0 * attempt)
+                            _append_log(f"[RETRY] Retrying turn {turn} after {wait_s:.1f}s ({rem_after:.0f}s left in 20m window)...")
+                            await asyncio.sleep(wait_s)
+                            continue
+                        timed_out = True
+                        exit_code = 124
+                        _save_checkpoint(messages, turn - 1, final_text)
+                        break
+                    except Exception as exc:
+                        _append_log(f"[MUX ERROR] {exc}")
+                        exit_code = 1
+                        break
+
+                if resp is None:
                     break
 
                 blocks = resp.get("content") or []
@@ -557,7 +679,7 @@ exec nice -n 15 {rendered}
 
                 stop_reason = resp.get("stop_reason")
                 if not tool_uses:
-                    if stop_reason == "max_tokens" and turn < 19:
+                    if stop_reason == "max_tokens" and turn < max_turns:
                         _append_log(f"\n[Turn {turn} · Max-tokens reached mid-thought; nudging tool execution...]")
                         if assistant_keep:
                             messages.append({"role": "assistant", "content": assistant_keep})
@@ -567,7 +689,9 @@ exec nice -n 15 {rendered}
                                 "content": "Your previous turn hit max_tokens before emitting a tool call. Do not repeat your reasoning—immediately call `write_file` or `bash` to complete the task.",
                             }
                         )
+                        _save_checkpoint(messages, turn, final_text)
                         continue
+                    _save_checkpoint(messages, turn, final_text)
                     _append_log(f"\n=== [DONE] turns={turn} elapsed={time.monotonic()-t0:.1f}s ===")
                     break
 
@@ -590,6 +714,7 @@ exec nice -n 15 {rendered}
                         }
                     )
                 messages.append({"role": "user", "content": tool_results})
+                _save_checkpoint(messages, turn, final_text)
         finally:
             if wid:
                 await self.tmux_pool.close_window(wid)

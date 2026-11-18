@@ -107,6 +107,7 @@ def _build_config_from_args(args: argparse.Namespace) -> SwarmConfig:
         hosted_quota_per_day=args.hosted_quota,
         auto_hosted_on_sota=args.auto_hosted_on_sota,
         agent_timeout_sec=args.agent_timeout,
+        http_timeout_sec=args.agent_timeout,
         eval_timeout_sec=args.eval_timeout,
         max_slice_mem_gib=args.max_slice_gib,
         min_avail_mem_gib=args.min_avail_gib,
@@ -469,7 +470,7 @@ def _add_shared_init_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--islands", type=int, default=5, help="Number of independent Research Directions (Islands).")
     p.add_argument("--hosted-quota", type=int, default=5, help="Max hosted leaderboard submissions per 24 hours.")
     p.add_argument("--auto-hosted-on-sota", action="store_true", help="Automatically trigger hosted_submit.sh when global SOTA improves.")
-    p.add_argument("--agent-timeout", type=int, default=900, help="Per-agent timeout in seconds.")
+    p.add_argument("--agent-timeout", type=int, default=1200, help="Per-agent window & HTTP retry timeout in seconds (default: 1200s / 20m).")
     p.add_argument("--eval-timeout", type=int, default=180, help="Per-eval timeout in seconds.")
     p.add_argument("--max-slice-gib", type=float, default=72.0, help="Effective non-reclaimable user-slice RAM ceiling in GiB.")
     p.add_argument("--min-avail-gib", type=float, default=20.0, help="System MemAvailable floor in GiB.")

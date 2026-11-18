@@ -107,6 +107,7 @@ class SwarmDB:
                     harness_used TEXT DEFAULT '',
                     model_used TEXT DEFAULT '',
                     effort_used TEXT DEFAULT '',
+                    timeout_retries INTEGER DEFAULT 0,
                     visits INTEGER DEFAULT 0,
                     max_subtree_speedup REAL DEFAULT 1.0,
                     created_at REAL NOT NULL,
@@ -173,6 +174,8 @@ class SwarmDB:
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
             if "effort_used" not in cols:
                 conn.execute("ALTER TABLE nodes ADD COLUMN effort_used TEXT DEFAULT ''")
+            if "timeout_retries" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN timeout_retries INTEGER DEFAULT 0")
             existing_runs = conn.execute("SELECT COUNT(*) AS c FROM eval_runs").fetchone()["c"]
             if int(existing_runs) == 0:
                 conn.execute(
@@ -457,6 +460,7 @@ class SwarmDB:
         diagnostics: str | None = None,
         code_summary: str | None = None,
         candidate_path: str | None = None,
+        timeout_retries: int | None = None,
         finished: bool = False,
     ) -> None:
         sets: list[str] = []
@@ -485,6 +489,9 @@ class SwarmDB:
         if candidate_path is not None:
             sets.append("candidate_path=?")
             vals.append(candidate_path)
+        if timeout_retries is not None:
+            sets.append("timeout_retries=?")
+            vals.append(int(timeout_retries))
         if finished:
             sets.append("finished_at=?")
             vals.append(time.time())

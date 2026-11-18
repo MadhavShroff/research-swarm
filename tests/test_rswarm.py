@@ -358,6 +358,140 @@ PY
             self.assertTrue(r2["hosted_submission"]["submitted"])
             self.assertEqual(db.count_recent_hosted_submissions(86400.0), 1)
 
+    async def test_429_retry_and_checkpoint_resume_on_timeout(self) -> None:
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+        from rswarm.coordinator import SwarmCoordinator
+
+        calls: list[dict] = []
+
+        class MockMuxHandler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args) -> None:
+                pass
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length).decode())
+                calls.append(body)
+                n = len(calls)
+                if n == 1:
+                    # 1st call: simulate saturated 429 with Retry-After: 1
+                    self.send_response(429)
+                    self.send_header("Retry-After", "1")
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"rate_limited"}')
+                    return
+                if n == 2:
+                    # 2nd call (same turn 1 after 429 retry!): write improved candidate + state file BEFORE timeout!
+                    resp = {
+                        "stop_reason": "tool_use",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "tu_1",
+                                "name": "write_file",
+                                "input": {"path": "step1_state.txt", "content": "PARTIAL_SOLVER_READY"},
+                            },
+                            {
+                                "type": "tool_use",
+                                "id": "tu_2",
+                                "name": "write_file",
+                                "input": {"path": "candidate/cand.txt", "content": "27.5\n"},
+                            },
+                        ],
+                    }
+                elif n == 3:
+                    # 3rd call: hold past 5s window to trigger timeout checkpoint!
+                    import time as _t
+                    _t.sleep(3.6)
+                    self.send_response(429)
+                    self.send_header("Retry-After", "10")
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"still_saturated"}')
+                    return
+                else:
+                    # 4th call (AFTER coordinator re-queues & resumes from checkpoint!):
+                    # Verify previous messages + step1_state.txt survived, then finish!
+                    resp = {
+                        "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": "Resumed cleanly from checkpoint and finished!"}],
+                    }
+                raw = json.dumps(resp).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        srv = HTTPServer(("127.0.0.1", 0), MockMuxHandler)
+        port = srv.server_address[1]
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                ws = tmp_path / "ws-resume"
+                local_ev = tmp_path / "local_eval.sh"
+                local_ev.write_text('#!/usr/bin/env bash\nS="$(cat "$1")"\nprintf \'{"valid": true, "score": %s, "eval_ms": 1.0, "diagnostics": "ok", "metrics": {}}\\n\' "$S"\n')
+                local_ev.chmod(0o755)
+                hosted_ev = tmp_path / "hosted_submit.sh"
+                hosted_ev.write_text('#!/usr/bin/env bash\necho \'{"submitted": false}\'\n')
+                hosted_ev.chmod(0o755)
+                base_c = tmp_path / "cand.txt"
+                base_c.write_text("28.9\n")
+
+                cfg = SwarmConfig(
+                    name="ws-resume",
+                    workspace_dir=str(ws),
+                    brief="Test 429 & checkpoint resume.",
+                    harness="claude-mux-lite",
+                    agent_timeout_sec=5,
+                    http_timeout_sec=5,
+                    max_timeout_retries=2,
+                    keep_window_sec=0.1,
+                )
+                db = SwarmDB(ws / "state" / "swarm.db")
+                rbin = Path(__file__).resolve().parent.parent / "bin" / "rswarm"
+                boot = await bootstrap_workspace(
+                    cfg, db, rbin, local_eval_src=str(local_ev), hosted_eval_src=str(hosted_ev), baseline_src=str(base_c)
+                )
+                coord = SwarmCoordinator(cfg, db)
+                import unittest.mock as mock
+                with mock.patch("rswarm.harnesses._load_mux_proxy_credentials", return_value=(f"http://127.0.0.1:{port}", "tok")):
+                    nid, _, _ = db.create_node(
+                        island_id=0,
+                        role="IMPLEMENT",
+                        title="Timeout resume probe",
+                        parent_id=boot["baseline_node_id"],
+                        novelty_threshold=None,
+                    )
+                    claimed1 = db.claim_next_queued_node(preferred_island=0, exclude_roles=("EXPLORE",))
+                    self.assertEqual(claimed1["node_id"], nid)
+
+                    # Run 1: survives initial 429, writes step1_state.txt, hits 3s timeout, saves checkpoint & re-queues!
+                    await coord._run_node_worker(claimed1, "claude-mux-lite")
+                    after1 = db.get_node(nid)
+                    self.assertEqual(after1["status"], "QUEUED")
+                    self.assertEqual(after1["timeout_retries"], 1)
+                    self.assertTrue((ws / "work" / nid / "step1_state.txt").is_file())
+                    self.assertTrue((ws / "work" / nid / ".rswarm_checkpoint.json").is_file())
+
+                    # Run 2: picks up same node, preserves step1_state.txt + prior messages, and completes!
+                    cfg.agent_timeout_sec = 10
+                    cfg.http_timeout_sec = 10
+                    claimed2 = db.claim_next_queued_node(preferred_island=0, exclude_roles=("EXPLORE",))
+                    self.assertEqual(claimed2["node_id"], nid)
+                    await coord._run_node_worker(claimed2, "claude-mux-lite")
+                    after2 = db.get_node(nid)
+                    self.assertEqual(after2["status"], "BREAKTHROUGH")
+                    # Call #4 received multi-turn history from checkpoint!
+                    self.assertGreaterEqual(len(calls[-1]["messages"]), 3)
+                coord.tmux_pool.cleanup_all_sync(kill_session=True)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()
