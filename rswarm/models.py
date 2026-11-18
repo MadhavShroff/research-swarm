@@ -150,7 +150,7 @@ class SwarmConfig:
     custom_harness_cmd: str = ""
     researcher_model: str = DEFAULT_DEEPSEEK_MODEL
     implementer_model: str = DEFAULT_DEEPSEEK_MODEL
-    effort: str = "medium"
+    effort: str = "low"
     concurrency: int = 16
     max_heavy_mux_procs: int = 24
     eval_workers: int = 4
@@ -159,7 +159,7 @@ class SwarmConfig:
     novelty_threshold: float = 0.72
     hosted_quota_per_day: int = 5
     auto_hosted_on_sota: bool = False
-    agent_timeout_sec: int = 420
+    agent_timeout_sec: int = 900
     eval_timeout_sec: int = 180
     max_slice_mem_gib: float = 72.0
     min_avail_mem_gib: float = 20.0

@@ -512,7 +512,7 @@ exec nice -n 15 {rendered}
                         base_url,
                         token,
                         payload,
-                        min(rem, 180.0),
+                        min(rem, 360.0),
                     )
                 except urllib.error.HTTPError as he:
                     err_body = he.read().decode("utf-8", errors="replace")[:500]
