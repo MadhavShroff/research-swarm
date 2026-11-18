@@ -231,6 +231,8 @@ async def bootstrap_workspace(
     db.set_meta("harness", cfg.harness)
     db.set_meta("researcher_model", cfg.researcher_model)
     db.set_meta("implementer_model", cfg.implementer_model)
+    db.set_meta("role_routing", cfg.role_routing_dict())
+    db.set_meta("concurrency", cfg.concurrency)
 
     eval_dir = ws / "eval"
     local_eval_sh = eval_dir / "local_eval.sh"

@@ -58,6 +58,48 @@ class SwarmCoordinator:
         self.stop_event = asyncio.Event()
         self.started_at: float = time.time()
         self._island_rr: int = 0
+        self._cfg_path: Path = self.ws / "swarm.json"
+        self._cfg_mtime: float = self._cfg_path.stat().st_mtime if self._cfg_path.is_file() else 0.0
+
+    def _reload_live_config_if_changed(self) -> None:
+        """Hot-reload swarm.json live without interrupting in-flight agents."""
+        if not self._cfg_path.is_file():
+            return
+        try:
+            st = self._cfg_path.stat()
+            if st.st_mtime <= self._cfg_mtime:
+                return
+            self._cfg_mtime = st.st_mtime
+            new_cfg = SwarmConfig.from_dict(json.loads(self._cfg_path.read_text()))
+        except Exception as exc:
+            self.db.log_event("WARN", "config", f"Ignored invalid live swarm.json edit: {exc}")
+            return
+
+        changes: list[str] = []
+        if new_cfg.concurrency != self.cfg.concurrency:
+            changes.append(f"concurrency {self.cfg.concurrency}->{new_cfg.concurrency}")
+        old_r = self.cfg.role_routing_dict()
+        new_r = new_cfg.role_routing_dict()
+        for rname, spec in new_r.items():
+            if old_r.get(rname) != spec:
+                changes.append(f"{rname}={spec['model']}[{spec['effort']}]")
+        if new_cfg.harness != self.cfg.harness:
+            changes.append(f"harness={new_cfg.harness}")
+
+        self.cfg = new_cfg
+        self.dashboard.cfg = new_cfg
+        self.eval_service.cfg = new_cfg
+        self.governor.max_slice_mem_gib = new_cfg.max_slice_mem_gib
+        self.governor.min_avail_mem_gib = new_cfg.min_avail_mem_gib
+        self.governor.max_heavy_mux_procs = new_cfg.max_heavy_mux_procs
+
+        self.db.set_meta("concurrency", new_cfg.concurrency)
+        self.db.set_meta("harness", new_cfg.harness)
+        self.db.set_meta("researcher_model", new_cfg.researcher_model)
+        self.db.set_meta("implementer_model", new_cfg.implementer_model)
+        self.db.set_meta("role_routing", new_r)
+        if changes:
+            self.db.log_event("INFO", "hot-reload", "Live config applied: " + ", ".join(changes))
 
     def request_stop(self) -> None:
         self.stop_event.set()
@@ -298,7 +340,7 @@ Steps:
         role = str(node["role"]).upper()
         islands = {int(i["island_id"]): i for i in self.db.get_islands()}
         island = islands.get(int(node["island_id"]), {"island_id": 0, "name": "main", "strategy_focus": ""})
-        model_id = self.cfg.researcher_model if role == "EXPLORE" else self.cfg.implementer_model
+        model_id, effort_lvl = self.cfg.model_and_effort_for_role(role)
         win_name = make_tmux_window_name(role, str(island["name"]), str(node["title"]), nid)
 
         if concrete_harness == "claude-mux-lite":
@@ -315,17 +357,18 @@ Steps:
                 tmux_window=win_name,
                 harness_used=concrete_harness,
                 model_used=model_id,
+                effort_used=effort_lvl,
             )
             self.db.log_event(
                 "SPAWN",
                 nid,
-                f"[{role}] window={win_name} harness={concrete_harness} island={island['name']} :: {node['title'][:75]}",
+                f"[{role}] win={win_name} model={model_id}[{effort_lvl}] :: {node['title'][:65]}",
             )
 
             res = await self.runner.run_agent(
                 harness_mode=concrete_harness,
                 model_id=model_id,
-                effort=self.cfg.effort,
+                effort=effort_lvl,
                 node_id=nid,
                 window_name=win_name,
                 workdir=wdir,
@@ -393,6 +436,8 @@ Steps:
         """Main long-running coordinator loop."""
         self.started_at = time.time()
         self.db.set_meta("started_at", self.started_at)
+        self.db.set_meta("concurrency", self.cfg.concurrency)
+        self.db.set_meta("role_routing", self.cfg.role_routing_dict())
         recovered = self.db.recover_interrupted_nodes()
         if recovered:
             self.db.log_event("INFO", "coordinator", f"Recovered {recovered} interrupted nodes back to QUEUED.")
@@ -421,6 +466,7 @@ Steps:
 
         try:
             while not self.stop_event.is_set():
+                self._reload_live_config_if_changed()
                 stats = self.db.get_summary_stats()
                 if max_evaluations is not None and stats["evaluated_total"] >= max_evaluations:
                     self.db.log_event(

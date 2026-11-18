@@ -219,6 +219,7 @@ class HarnessRunner:
         sys_file = workdir / ".rswarm_system.md"
         script_file = workdir / ".rswarm_exec.sh"
         exit_file = workdir / ".rswarm_exit"
+        cli_effort = "low" if effort == "minimal" else effort
 
         prompt_file.write_text(task_prompt)
         sys_file.write_text(system_prompt)
@@ -260,7 +261,7 @@ cd {shlex.quote(str(workdir))}
 printf '=== [claude-mux] node=%s window=%s model=%s ===\\n' {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(model_id)}
 exec nice -n 15 claude \\
   --model {shlex.quote(model_id)} \\
-  --effort {shlex.quote(effort)} \\
+  --effort {shlex.quote(cli_effort)} \\
   --dangerously-skip-permissions \\
   --no-session-persistence \\
   --setting-sources "" \\
@@ -503,8 +504,12 @@ exec nice -n 15 {rendered}
                     "system": system_prompt,
                     "messages": messages,
                     "tools": MUX_LITE_TOOLS,
-                    "output_config": {"effort": effort},
                 }
+                if effort == "minimal":
+                    # llm-provider-proxy maps budget_tokens <= 512 to Morph OpenAI-wire reasoning_effort="minimal"
+                    payload["thinking"] = {"type": "enabled", "budget_tokens": 512}
+                else:
+                    payload["output_config"] = {"effort": effort}
 
                 try:
                     resp = await asyncio.to_thread(
