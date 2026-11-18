@@ -70,8 +70,14 @@ def build_tui_layout(coord: "SwarmCoordinator", max_evals: int | None) -> Layout
     hdr.append(f"{baseline} (1.0000x)  ", style="white")
     hdr.append("Global Best: ", style="dim")
     hdr.append(f"{best} ({speedup:.4f}x)  ", style="bold bright_green")
-    hdr.append("Target SOTA: ", style="dim")
-    hdr.append(f"{target if target is not None else 'open-ended'} ({coord.cfg.direction})  ", style="bold gold1")
+    hdr.append("Goal: ", style="dim")
+    hdr.append(f"{target if target is not None else 'open'}  ", style="bold gold1")
+    if coord.cfg.leaderboard_number_one is not None:
+        hdr.append("LB #1: ", style="dim")
+        hdr.append(f"{coord.cfg.leaderboard_number_one:.6g}  ", style="bold bright_magenta")
+    if coord.cfg.leaderboard_submit_threshold is not None:
+        hdr.append("Top-5 Submit Gate: ", style="dim")
+        hdr.append(f"{coord.cfg.leaderboard_submit_threshold:.6g}  ", style="bold cyan")
     hdr.append("[Keys: p=pause/resume  q=quit]", style="dim italic")
 
     # 2. Four live progress bars

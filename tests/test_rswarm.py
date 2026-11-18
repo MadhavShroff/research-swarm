@@ -281,6 +281,83 @@ PY
             finally:
                 await svc.stop_rpc_server()
 
+    async def test_leaderboard_number_one_and_top5_submission_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ws = tmp_path / "ws-gate"
+            local_ev = tmp_path / "local_eval.sh"
+            local_ev.write_text(
+                '#!/usr/bin/env bash\n'
+                'SCORE="$(cat "$1")"\n'
+                'printf \'{"valid": true, "score": %s, "eval_ms": 1.2, "diagnostics": "ok", "metrics": {}}\\n\' "$SCORE"\n'
+            )
+            local_ev.chmod(0o755)
+            hosted_ev = tmp_path / "hosted_submit.sh"
+            hosted_ev.write_text(
+                '#!/usr/bin/env bash\n'
+                'echo \'{"submitted": true, "hosted_score": 22.05, "message": "submitted to kaggle"}\'\n'
+            )
+            hosted_ev.chmod(0o755)
+            base_c = tmp_path / "cand.txt"
+            base_c.write_text("28.9377\n")
+
+            cfg = SwarmConfig(
+                name="ws-gate",
+                workspace_dir=str(ws),
+                brief="Minimize packing score.",
+                direction="minimize",
+                leaderboard_target=27.2,
+                leaderboard_number_one=22.039951,
+                leaderboard_submit_threshold=22.056609,
+                concurrency=10,
+            )
+            db = SwarmDB(ws / "state" / "swarm.db")
+            rbin = Path(__file__).resolve().parent.parent / "bin" / "rswarm"
+            boot = await bootstrap_workspace(
+                cfg,
+                db,
+                rbin,
+                local_eval_src=str(local_ev),
+                hosted_eval_src=str(hosted_ev),
+                baseline_src=str(base_c),
+            )
+            svc = EvalAndTreeService(cfg, db)
+
+            # 1. Breakthrough at 26.5000 (beats baseline, NOT yet in Top 5 <= 22.056609) -> held by gate!
+            n1, _, _ = db.create_node(
+                island_id=0,
+                role="IMPLEMENT",
+                title="Mid gain",
+                parent_id=boot["baseline_node_id"],
+                novelty_threshold=None,
+            )
+            c1 = tmp_path / "c1.txt"
+            c1.write_text("26.5000\n")
+            r1 = await svc.handle_submit(
+                {"node_id": n1, "candidate_path": str(c1), "summary": "26.5 gain", "request_hosted": True}
+            )
+            self.assertTrue(r1["vault_promoted"])
+            self.assertTrue(r1["hosted_submission"]["gated"])
+            self.assertFalse(r1["hosted_submission"]["submitted"])
+            self.assertEqual(db.count_recent_hosted_submissions(86400.0), 0)
+
+            # 2. Breakthrough at 22.0500 (inside Top 5 <= 22.056609) -> auto-submits even without request_hosted!
+            n2, _, _ = db.create_node(
+                island_id=0,
+                role="DEEPEN",
+                title="Top-5 breakthrough",
+                parent_id=n1,
+                novelty_threshold=None,
+            )
+            c2 = tmp_path / "c2.txt"
+            c2.write_text("22.0500\n")
+            r2 = await svc.handle_submit(
+                {"node_id": n2, "candidate_path": str(c2), "summary": "Entered Top 5!"}
+            )
+            self.assertTrue(r2["vault_promoted"])
+            self.assertTrue(r2["hosted_submission"]["submitted"])
+            self.assertEqual(db.count_recent_hosted_submissions(86400.0), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

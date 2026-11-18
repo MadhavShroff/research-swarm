@@ -93,6 +93,15 @@ def is_better_score(candidate: float, reference: float, direction: str) -> bool:
     return candidate > reference + 1e-12
 
 
+def meets_or_beats_score(candidate: float, threshold: float, direction: str) -> bool:
+    """Return True if candidate meets or beats threshold (e.g. Top-5 leaderboard gate)."""
+    if math.isnan(candidate) or math.isinf(candidate):
+        return False
+    if direction == "minimize":
+        return candidate <= threshold + 1e-12
+    return candidate >= threshold - 1e-12
+
+
 def compute_speedup_and_progress(
     score: float | None,
     baseline_score: float | None,
@@ -147,6 +156,8 @@ class SwarmConfig:
     brief: str
     direction: str = "minimize"  # "minimize" | "maximize"
     leaderboard_target: float | None = None
+    leaderboard_number_one: float | None = None
+    leaderboard_submit_threshold: float | None = None
     harness: str = "claude-mux-scale"
     custom_harness_cmd: str = ""
     researcher_model: str = DEFAULT_DEEPSEEK_MODEL

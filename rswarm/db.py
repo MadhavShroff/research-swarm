@@ -789,6 +789,8 @@ class SwarmDB:
             "best_speedup": meta.get("best_speedup", 1.0),
             "best_goal_progress": meta.get("best_goal_progress", 0.0),
             "leaderboard_target": meta.get("leaderboard_target"),
+            "leaderboard_number_one": meta.get("leaderboard_number_one"),
+            "leaderboard_submit_threshold": meta.get("leaderboard_submit_threshold"),
             "direction": meta.get("direction", "minimize"),
         }
 

@@ -48,17 +48,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .app {
     display: grid;
-    grid-template-rows: 58px 1fr;
+    grid-template-rows: auto 1fr;
     grid-template-columns: minmax(260px, 320px) minmax(420px, 1fr) minmax(260px, 360px);
     width: 100vw; height: 100vh;
   }
   .mobile-tabs { display: none; }
   @media (max-width: 1120px) {
     .app {
-      grid-template-rows: 58px 40px 1fr;
+      grid-template-rows: auto 40px 1fr;
       grid-template-columns: 1fr;
     }
-    header { padding: 0 12px; overflow-x: auto; gap: 12px; }
+    header { padding: 8px 12px; overflow-x: auto; gap: 12px; }
     .mobile-tabs {
       display: flex; gap: 6px; align-items: center; padding: 0 12px;
       background: rgba(9, 13, 22, 0.95); border-bottom: 1px solid var(--border);
@@ -75,16 +75,18 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   header {
     grid-column: 1 / -1;
+    min-height: 58px;
     display: flex; align-items: center; justify-content: space-between;
-    padding: 0 18px;
+    flex-wrap: wrap; gap: 6px 14px;
+    padding: 6px 16px;
     background: rgba(9, 13, 22, 0.92);
     border-bottom: 1px solid var(--border);
     backdrop-filter: blur(12px);
     z-index: 20;
   }
-  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .badge-live {
-    display: inline-flex; align-items: center; gap: 6px;
+    display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
     padding: 4px 10px; border-radius: 999px;
     background: rgba(52, 211, 153, 0.12);
     border: 1px solid rgba(52, 211, 153, 0.35);
@@ -99,27 +101,27 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     0%, 100% { transform: scale(1); opacity: 1; }
     50% { transform: scale(1.45); opacity: 0.55; }
   }
-  .title-main { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
-  .subtitle { font-size: 12px; color: var(--muted); }
-  .kpis { display: flex; align-items: center; gap: 10px; }
+  .title-main { font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
+  .subtitle { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 460px; }
+  .kpis { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
   .kpi {
-    display: flex; flex-direction: column; align-items: flex-end;
-    padding: 4px 10px; border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0;
+    padding: 4px 8px; border-right: 1px solid var(--border);
     border-radius: 6px; cursor: help; transition: background 0.14s ease;
   }
   .kpi:hover { background: rgba(56, 189, 248, 0.08); }
   .kpi:last-child { border-right: none; }
   .kpi-label {
-    display: inline-flex; align-items: center; gap: 4px;
-    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim);
+    display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+    font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--dim);
   }
   .help-q {
-    display: inline-flex; align-items: center; justify-content: center;
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
     width: 13px; height: 13px; border-radius: 50%;
     background: rgba(56, 189, 248, 0.18); border: 1px solid rgba(56, 189, 248, 0.48);
     color: var(--accent); font-size: 9px; font-weight: 800; line-height: 1;
   }
-  .kpi-val { font-size: 14px; font-weight: 700; color: var(--text); }
+  .kpi-val { font-size: 13.5px; font-weight: 700; color: var(--text); white-space: nowrap; margin-top: 2px; }
   .kpi-val.win { color: var(--win); }
   .kpi-val.gold { color: var(--gold); }
   .kpi-val.cyan { color: var(--accent); }
@@ -274,7 +276,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       <div class="kpi" data-kpi="baseline"><span class="kpi-label">Baseline</span><span class="kpi-val" id="kpiBase">—</span></div>
       <div class="kpi" data-kpi="best"><span class="kpi-label">Global Best</span><span class="kpi-val win" id="kpiBest">—</span></div>
       <div class="kpi" data-kpi="speedup"><span class="kpi-label">Speedup</span><span class="kpi-val win" id="kpiSpeedup">1.0000x</span></div>
-      <div class="kpi" data-kpi="goal"><span class="kpi-label">Goal</span><span class="kpi-val gold" id="kpiGoal">0.0%</span></div>
+      <div class="kpi" data-kpi="goal"><span class="kpi-label">Goal <span class="help-q">?</span></span><span class="kpi-val gold" id="kpiGoal">0.0%</span></div>
+      <div class="kpi" data-kpi="lb1" id="kpiBoxLbOne"><span class="kpi-label">Leaderboard #1 <span class="help-q">?</span></span><span class="kpi-val" style="color:#e879f9" id="kpiLbOne">—</span></div>
       <div class="kpi" data-kpi="created"><span class="kpi-label">Hypotheses Created <span class="help-q">?</span></span><span class="kpi-val cyan" id="kpiHypCreated">0</span></div>
       <div class="kpi" data-kpi="tested" id="kpiBoxTested"><span class="kpi-label">Tested (Eval Runs) <span class="help-q">?</span></span><span class="kpi-val win" id="kpiHypTested">0</span></div>
       <div class="kpi" data-kpi="testing"><span class="kpi-label">Testing Now <span class="help-q">?</span></span><span class="kpi-val gold" id="kpiHypTesting">0</span></div>
@@ -428,7 +431,11 @@ function renderAll() {
   document.getElementById('kpiBase').textContent = st.baseline_score !== null && st.baseline_score !== undefined ? Number(st.baseline_score).toPrecision(6) : '—';
   document.getElementById('kpiBest').textContent = st.best_score !== null && st.best_score !== undefined ? Number(st.best_score).toPrecision(6) : '—';
   document.getElementById('kpiSpeedup').textContent = `${Number(st.best_speedup || 1).toFixed(4)}x`;
-  document.getElementById('kpiGoal').textContent = `${(Number(st.best_goal_progress || 0) * 100).toFixed(1)}%`;
+  const tgtVal = meta.leaderboard_target ?? st.leaderboard_target;
+  const gpPct = `${(Number(st.best_goal_progress || 0) * 100).toFixed(1)}%`;
+  document.getElementById('kpiGoal').textContent = tgtVal !== null && tgtVal !== undefined ? `${Number(tgtVal).toPrecision(4)} (${gpPct})` : gpPct;
+  const lbOne = meta.leaderboard_number_one ?? st.leaderboard_number_one;
+  document.getElementById('kpiLbOne').textContent = lbOne !== null && lbOne !== undefined ? Number(lbOne).toFixed(4) : '—';
   document.getElementById('kpiHypCreated').textContent = `${st.hypotheses_created ?? 0}`;
   document.getElementById('kpiHypTested').textContent = `${st.hypotheses_tested ?? 0} (${st.eval_suite_runs ?? 0})`;
   document.getElementById('kpiHypTesting').textContent = `${st.hypotheses_testing_now ?? 0} / ${meta.concurrency || st.running || 0}`;
@@ -479,8 +486,8 @@ function renderRadialSvg(d, islMap) {
     { frac: 0.25, label: '25% Goal', stroke: 'rgba(148,163,184,0.12)', dash: '3,5' },
     { frac: 0.50, label: '50% Goal', stroke: 'rgba(148,163,184,0.16)', dash: '3,5' },
     { frac: 0.75, label: '75% Goal', stroke: 'rgba(148,163,184,0.20)', dash: '4,4' },
-    { frac: 1.00, label: d.meta?.leaderboard_target != null ? `TARGET SOTA (${d.meta.leaderboard_target})` : 'Frontier 1.0 Ring', stroke: 'rgba(251,191,36,0.45)', dash: '6,4' },
-    { frac: 1.22, label: 'BEYOND LEADERBOARD SOTA', stroke: 'rgba(52,211,153,0.28)', dash: '2,6' },
+    { frac: 1.00, label: d.meta?.leaderboard_target != null ? `GOAL (${d.meta.leaderboard_target})` : 'Frontier 1.0 Ring', stroke: 'rgba(251,191,36,0.45)', dash: '6,4' },
+    { frac: 1.22, label: d.meta?.leaderboard_number_one != null ? `LEADERBOARD #1 (${Number(d.meta.leaderboard_number_one).toFixed(4)})` : 'BEYOND LEADERBOARD SOTA', stroke: 'rgba(232,121,249,0.36)', dash: '2,6' },
   ];
   for (const rg of rings) {
     const rr = maxR * rg.frac;
@@ -686,8 +693,13 @@ function buildKpiTooltipHtml(kpiKey) {
       body: `Ratio of Baseline to Global Best (${Number(st.best_speedup || 1).toFixed(4)}x). Outward ray lengths scale with this verified gain.`,
     },
     goal: {
-      title: 'Progress Toward Leaderboard Target',
-      body: `Percentage of the gap closed from Baseline (${st.baseline_score ?? '—'}) to Target SOTA (${st.leaderboard_target ?? 'open'}). >100% means exceeding target SOTA.`,
+      title: 'Milestone Goal & Gap Closed',
+      body: `Current milestone target is <b>${meta.leaderboard_target ?? st.leaderboard_target ?? 'open'}</b> (${(Number(st.best_goal_progress || 0) * 100).toFixed(1)}% of gap closed from Baseline ${st.baseline_score ?? '—'}).`,
+    },
+    lb1: {
+      title: 'Public Leaderboard #1 & Top-5 Submit Gate',
+      body: `<div style="margin-bottom:5px;">• <b>Leaderboard #1 Score:</b> <b>${meta.leaderboard_number_one ?? st.leaderboard_number_one ?? '—'}</b> (${meta.direction || 'minimize'}).</div>` +
+            `<div>• <b>Auto-Submit Gate (Top 5):</b> <b>${meta.leaderboard_submit_threshold ?? st.leaderboard_submit_threshold ?? '—'}</b>. Hosted leaderboard submissions stay gated until our verified global best enters the Top 5 best results, then submit automatically.</div>`,
     },
     created: {
       title: 'Total Hypotheses Created',
@@ -933,6 +945,9 @@ class DashboardServer:
                 live_cfg = SwarmConfig.from_dict(json.loads(cfg_file.read_text()))
                 payload["meta"]["concurrency"] = live_cfg.concurrency
                 payload["meta"]["role_routing"] = live_cfg.role_routing_dict()
+                payload["meta"]["leaderboard_target"] = live_cfg.leaderboard_target
+                payload["meta"]["leaderboard_number_one"] = live_cfg.leaderboard_number_one
+                payload["meta"]["leaderboard_submit_threshold"] = live_cfg.leaderboard_submit_threshold
             except Exception:
                 pass
         payload["governor"] = self.governor.sample().to_dict()
