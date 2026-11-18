@@ -101,17 +101,56 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   }
   .title-main { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
   .subtitle { font-size: 12px; color: var(--muted); }
-  .kpis { display: flex; align-items: center; gap: 18px; }
+  .kpis { display: flex; align-items: center; gap: 10px; }
   .kpi {
     display: flex; flex-direction: column; align-items: flex-end;
-    padding-right: 14px; border-right: 1px solid var(--border);
+    padding: 4px 10px; border-right: 1px solid var(--border);
+    border-radius: 6px; cursor: help; transition: background 0.14s ease;
   }
-  .kpi:last-child { border-right: none; padding-right: 0; }
-  .kpi-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim); }
+  .kpi:hover { background: rgba(56, 189, 248, 0.08); }
+  .kpi:last-child { border-right: none; }
+  .kpi-label {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--dim);
+  }
+  .help-q {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 13px; height: 13px; border-radius: 50%;
+    background: rgba(56, 189, 248, 0.18); border: 1px solid rgba(56, 189, 248, 0.48);
+    color: var(--accent); font-size: 9px; font-weight: 800; line-height: 1;
+  }
   .kpi-val { font-size: 14px; font-weight: 700; color: var(--text); }
   .kpi-val.win { color: var(--win); }
   .kpi-val.gold { color: var(--gold); }
   .kpi-val.cyan { color: var(--accent); }
+
+  /* Floating Rich Hover Tooltip (KPIs & Graph Nodes) */
+  .hover-tooltip {
+    position: fixed; top: 0; left: 0; z-index: 9999;
+    max-width: 370px; min-width: 240px;
+    padding: 11px 13px; border-radius: 10px;
+    background: rgba(9, 13, 22, 0.96);
+    border: 1px solid rgba(56, 189, 248, 0.42);
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(14px);
+    color: var(--text); font-size: 12px; line-height: 1.45;
+    pointer-events: none; opacity: 0; transform: translateY(4px);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+  }
+  .hover-tooltip.visible { opacity: 1; transform: translateY(0); }
+  .ht-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; font-size: 10.5px; color: var(--muted); }
+  .ht-badge { padding: 2px 6px; border-radius: 4px; font-weight: 700; font-size: 10px; background: rgba(56,189,248,0.15); color: var(--accent); }
+  .ht-badge.BREAKTHROUGH { background: rgba(52,211,153,0.16); color: var(--win); }
+  .ht-badge.RUNNING { background: rgba(251,191,36,0.18); color: var(--gold); }
+  .ht-title { font-size: 13px; font-weight: 700; color: #f8fafc; margin-bottom: 6px; line-height: 1.3; }
+  .ht-metrics {
+    display: flex; flex-wrap: wrap; gap: 6px 10px;
+    padding: 6px 8px; margin-bottom: 7px; border-radius: 6px;
+    background: rgba(255,255,255,0.04); font-size: 11px;
+  }
+  .ht-desc { font-size: 11.5px; color: #cbd5e1; line-height: 1.45; }
+  .ht-foot { margin-top: 6px; font-size: 10px; color: var(--dim); }
+  .node-hit { cursor: pointer; }
 
   /* Left Sidebar: Chronological Research Diary & Bulletin */
   .sidebar-left, .sidebar-right {
@@ -231,16 +270,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <div class="subtitle" id="hdrSub">Center = Baseline (1.00x) · Outward Ray Length = Verified Speedup & Goal Progress</div>
       </div>
     </div>
-    <div class="kpis">
-      <div class="kpi"><span class="kpi-label">Baseline</span><span class="kpi-val" id="kpiBase">—</span></div>
-      <div class="kpi"><span class="kpi-label">Global Best</span><span class="kpi-val win" id="kpiBest">—</span></div>
-      <div class="kpi"><span class="kpi-label">Speedup</span><span class="kpi-val win" id="kpiSpeedup">1.0000x</span></div>
-      <div class="kpi"><span class="kpi-label">Goal</span><span class="kpi-val gold" id="kpiGoal">0.0%</span></div>
-      <div class="kpi"><span class="kpi-label">Hypotheses Created</span><span class="kpi-val cyan" id="kpiHypCreated">0</span></div>
-      <div class="kpi"><span class="kpi-label">Tested (Eval Runs)</span><span class="kpi-val win" id="kpiHypTested">0</span></div>
-      <div class="kpi"><span class="kpi-label">Testing Now</span><span class="kpi-val gold" id="kpiHypTesting">0</span></div>
-      <div class="kpi"><span class="kpi-label">Avg Eval Suite</span><span class="kpi-val cyan" id="kpiAvgEval">—</span></div>
-      <div class="kpi"><span class="kpi-label">Slice RAM</span><span class="kpi-val" id="kpiRam">—</span></div>
+    <div class="kpis" id="kpiBar">
+      <div class="kpi" data-kpi="baseline"><span class="kpi-label">Baseline</span><span class="kpi-val" id="kpiBase">—</span></div>
+      <div class="kpi" data-kpi="best"><span class="kpi-label">Global Best</span><span class="kpi-val win" id="kpiBest">—</span></div>
+      <div class="kpi" data-kpi="speedup"><span class="kpi-label">Speedup</span><span class="kpi-val win" id="kpiSpeedup">1.0000x</span></div>
+      <div class="kpi" data-kpi="goal"><span class="kpi-label">Goal</span><span class="kpi-val gold" id="kpiGoal">0.0%</span></div>
+      <div class="kpi" data-kpi="created"><span class="kpi-label">Hypotheses Created <span class="help-q">?</span></span><span class="kpi-val cyan" id="kpiHypCreated">0</span></div>
+      <div class="kpi" data-kpi="tested" id="kpiBoxTested"><span class="kpi-label">Tested (Eval Runs) <span class="help-q">?</span></span><span class="kpi-val win" id="kpiHypTested">0</span></div>
+      <div class="kpi" data-kpi="testing"><span class="kpi-label">Testing Now <span class="help-q">?</span></span><span class="kpi-val gold" id="kpiHypTesting">0</span></div>
+      <div class="kpi" data-kpi="avgeval"><span class="kpi-label">Avg Eval Suite <span class="help-q">?</span></span><span class="kpi-val cyan" id="kpiAvgEval">—</span></div>
+      <div class="kpi" data-kpi="ram"><span class="kpi-label">Slice RAM</span><span class="kpi-val" id="kpiRam">—</span></div>
     </div>
   </header>
 
@@ -300,6 +339,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
   </aside>
 </div>
+<div class="hover-tooltip" id="hoverTooltip"></div>
 
 <script>
 const API_BASE = window.location.pathname.endsWith('/')
@@ -504,6 +544,7 @@ function renderRadialSvg(d, islMap) {
 
     html += `<circle class="node-circle" data-nid="${n.node_id}" cx="${n._x.toFixed(1)}" cy="${n._y.toFixed(1)}" r="${r}" ` +
             `fill="${fill}" stroke="${stroke}" stroke-width="${sw}" opacity="${dimmed ? 0.2 : 1.0}" />`;
+    html += `<circle class="node-hit" data-nid="${n.node_id}" cx="${n._x.toFixed(1)}" cy="${n._y.toFixed(1)}" r="${Math.max(11, r + 5)}" fill="transparent" />`;
 
     if (isBase) {
       html += `<text x="0" y="27" text-anchor="middle" fill="#f8fafc" font-size="11" font-weight="700">ORIGIN 1.00x</text>`;
@@ -600,6 +641,131 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+// Hover Tooltip Logic (KPI Help Boxes & Radial Graph Nodes)
+const tooltipEl = document.getElementById('hoverTooltip');
+
+function placeTooltip(clientX, clientY, htmlContent) {
+  tooltipEl.innerHTML = htmlContent;
+  tooltipEl.classList.add('visible');
+  const rect = tooltipEl.getBoundingClientRect();
+  let x = clientX + 14;
+  let y = clientY + 14;
+  if (x + rect.width > window.innerWidth - 12) x = Math.max(12, clientX - rect.width - 14);
+  if (y + rect.height > window.innerHeight - 12) y = Math.max(12, clientY - rect.height - 14);
+  tooltipEl.style.left = `${x}px`;
+  tooltipEl.style.top = `${y}px`;
+}
+
+function hideTooltip() {
+  tooltipEl.classList.remove('visible');
+}
+
+function buildKpiTooltipHtml(kpiKey) {
+  const st = state.data?.stats || {};
+  const meta = state.data?.meta || {};
+  const gov = state.data?.governor || {};
+  const tested = st.hypotheses_tested ?? 0;
+  const runs = st.eval_suite_runs ?? 0;
+  const created = st.hypotheses_created ?? 0;
+  const queued = st.hypotheses_queued ?? 0;
+  const testing = st.hypotheses_testing_now ?? 0;
+  const avgMs = Number(st.avg_eval_ms || 0);
+
+  const docs = {
+    baseline: {
+      title: 'Origin Baseline Score (1.0000x)',
+      body: `Verified Phase-0 starting score (${st.baseline_score ?? '—'}) plotted at the center hub of the radial graph.`,
+    },
+    best: {
+      title: 'Global Best Verified Score',
+      body: `Best score (${st.best_score ?? '—'}) achieved across all islands and verified by the read-only local evaluation suite (${meta.direction || 'minimize'}).`,
+    },
+    speedup: {
+      title: 'Speedup / Improvement Multiplier',
+      body: `Ratio of Baseline to Global Best (${Number(st.best_speedup || 1).toFixed(4)}x). Outward ray lengths scale with this verified gain.`,
+    },
+    goal: {
+      title: 'Progress Toward Leaderboard Target',
+      body: `Percentage of the gap closed from Baseline (${st.baseline_score ?? '—'}) to Target SOTA (${st.leaderboard_target ?? 'open'}). >100% means exceeding target SOTA.`,
+    },
+    created: {
+      title: 'Total Hypotheses Created',
+      body: `<b>${created}</b> experiment nodes (<code>IMPLEMENT</code>, <code>DEEPEN</code>, <code>CROSSOVER</code>, <code>DEBUG</code>) generated by Researchers so far (<b>${queued}</b> currently waiting in queue).`,
+    },
+    tested: {
+      title: 'Tested Hypotheses vs. Total Eval Runs',
+      body: `<div style="margin-bottom:5px;">• <b>First number (${tested}) — Tested Hypotheses:</b> Unique hypothesis nodes built and evaluated to completion.</div>` +
+            `<div>• <b>In parentheses (${runs}) — Total Eval Suite Runs:</b> Total times <code>local_eval.sh</code> ran across all agents. Higher than ${tested} because builders iteratively call <code>swarm-eval</code> multiple times while tuning parameters before calling <code>swarm-submit</code>.</div>`,
+    },
+    testing: {
+      title: 'Hypotheses Being Tested Right Now',
+      body: `<b>${testing}</b> active builder/debugger agents currently coding and benchmarking in live <code>tmux</code> windows (out of concurrency cap <b>${meta.concurrency || '—'}</b>).`,
+    },
+    avgeval: {
+      title: 'Average Verification & Benchmark Duration',
+      body: `Mean wall-clock time (<b>${avgMs.toFixed(1)} ms</b> = <b>${(avgMs / 1000).toFixed(2)} s</b>) for one full execution of <code>eval/local_eval.sh</code> across ${runs} benchmark runs.`,
+    },
+    ram: {
+      title: 'Sparky Non-Reclaimable User-Slice RAM',
+      body: `Active process RAM in <code>user-1000.slice</code> (${gov.slice_current_gib ?? '—'} GiB used, ${gov.mem_avail_gib ?? '—'} GiB system RAM free).`,
+    },
+  };
+  const info = docs[kpiKey];
+  if (!info) return '';
+  return `<div class="ht-title">${info.title}</div><div class="ht-desc">${info.body}</div>`;
+}
+
+function buildNodeTooltipHtml(nodeId) {
+  const d = state.data;
+  if (!d) return '';
+  const n = (d.nodes || []).find(x => x.node_id === nodeId);
+  if (!n) return '';
+  const isl = (d.islands || []).find(i => Number(i.island_id) === Number(n.island_id)) || { name: 'origin', color: '#38bdf8' };
+  const mTag = shortModelTag(n.model_used, n.effort_used) || 'baseline';
+  const scoreTxt = n.score !== null && n.score !== undefined ? Number(n.score).toPrecision(6) : 'pending';
+  const spTxt = n.valid && n.speedup ? `${Number(n.speedup).toFixed(4)}x` : '—';
+  const rawDesc = (n.code_summary && n.code_summary.trim())
+    ? `${n.hypothesis || ''}\n\nResult: ${n.code_summary}`
+    : (n.hypothesis || n.rationale || 'Initial verified reference point at center origin.');
+  const trimmedDesc = rawDesc.length > 290 ? rawDesc.slice(0, 290) + '…' : rawDesc;
+
+  return `
+    <div class="ht-top">
+      <span style="display:inline-flex;align-items:center;gap:5px;">
+        <span class="leg-swatch" style="background:${isl.color}"></span>
+        <b>${escapeHtml(isl.name)}</b> · ${escapeHtml(n.node_id)}
+      </span>
+      <span class="ht-badge ${escapeHtml(n.status)}">${escapeHtml(n.role)} · ${escapeHtml(n.status)}</span>
+    </div>
+    <div class="ht-title">${escapeHtml(n.title)}</div>
+    <div class="ht-metrics">
+      <span>Score: <b style="color:var(--win)">${escapeHtml(scoreTxt)}</b></span>
+      <span>Speedup: <b style="color:var(--win)">${escapeHtml(spTxt)}</b></span>
+      <span>Model: <b style="color:#c084fc">${escapeHtml(mTag)}</b></span>
+      ${n.tmux_window ? `<span>tmux: <b style="color:var(--accent)">${escapeHtml(n.tmux_window)}</b></span>` : ''}
+    </div>
+    <div class="ht-desc">${escapeHtml(trimmedDesc)}</div>
+    <div class="ht-foot">Click node to pin full rationale, diagnostics & agent logs</div>
+  `;
+}
+
+document.getElementById('kpiBar').addEventListener('mousemove', e => {
+  const box = e.target.closest('.kpi[data-kpi]');
+  if (!box) { hideTooltip(); return; }
+  const html = buildKpiTooltipHtml(box.dataset.kpi);
+  if (html) placeTooltip(e.clientX, e.clientY, html);
+});
+document.getElementById('kpiBar').addEventListener('mouseleave', hideTooltip);
+
+svg.addEventListener('mousemove', e => {
+  if (state.dragging) { hideTooltip(); return; }
+  const nid = e.target?.getAttribute?.('data-nid');
+  if (!nid) { hideTooltip(); return; }
+  const html = buildNodeTooltipHtml(nid);
+  if (html) placeTooltip(e.clientX, e.clientY, html);
+});
+svg.addEventListener('mouseleave', hideTooltip);
 
 // Event Listeners
 svg.addEventListener('click', e => {
