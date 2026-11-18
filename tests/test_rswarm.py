@@ -341,7 +341,7 @@ PY
             self.assertFalse(r1["hosted_submission"]["submitted"])
             self.assertEqual(db.count_recent_hosted_submissions(86400.0), 0)
 
-            # 2. Breakthrough at 22.0500 (inside Top 5 <= 22.056609) -> auto-submits even without request_hosted!
+            # 2. Breakthrough at 22.0500: call run_local_eval FIRST (like swarm-eval), then handle_submit!
             n2, _, _ = db.create_node(
                 island_id=0,
                 role="DEEPEN",
@@ -351,9 +351,12 @@ PY
             )
             c2 = tmp_path / "c2.txt"
             c2.write_text("22.0500\n")
+            pre_eval = await svc.run_local_eval(node_id=n2, candidate_path=str(c2))
+            self.assertTrue(pre_eval["beat_global"])
             r2 = await svc.handle_submit(
                 {"node_id": n2, "candidate_path": str(c2), "summary": "Entered Top 5!"}
             )
+            self.assertTrue(r2["beat_global"])
             self.assertTrue(r2["vault_promoted"])
             self.assertTrue(r2["hosted_submission"]["submitted"])
             self.assertEqual(db.count_recent_hosted_submissions(86400.0), 1)
