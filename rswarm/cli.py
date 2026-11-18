@@ -91,6 +91,8 @@ def _build_config_from_args(args: argparse.Namespace) -> SwarmConfig:
         researcher_effort=args.researcher_effort,
         implementer_model=args.implementer_model,
         implementer_effort=args.implementer_effort,
+        deepen_model=args.deepen_model or args.researcher_model,
+        deepen_effort=args.deepen_effort,
         debugger_model=args.debugger_model or args.implementer_model,
         debugger_effort=args.debugger_effort,
         crossover_model=args.crossover_model or args.researcher_model,
@@ -300,7 +302,7 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
         raise ValueError("Specify at least `--model <id>` or `--effort <level>`.")
 
     roles = (
-        ["researcher", "implementer", "debugger", "crossover"]
+        ["researcher", "implementer", "deepen", "debugger", "crossover"]
         if args.role == "all"
         else [args.role]
     )
@@ -361,7 +363,8 @@ def _cmd_models(args: argparse.Namespace) -> int:
         rt.add_column("Reasoning Effort", style="bold gold1")
         role_nodes = {
             "researcher": "EXPLORE (Hypothesis Creator)",
-            "implementer": "IMPLEMENT, DEEPEN (Builder / Executor)",
+            "implementer": "IMPLEMENT (Builder / Executor)",
+            "deepen": "DEEPEN (Breakthrough Exploiter / Scaler)",
             "debugger": "DEBUG (Tester / Repairer)",
             "crossover": "CROSSOVER (Cross-Island Synthesizer)",
         }
@@ -446,8 +449,10 @@ def _add_shared_init_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--custom-cmd", default="", help="Command template for --harness custom ({prompt_file}, {model}, {workdir}).")
     p.add_argument("--researcher-model", default=DEFAULT_DEEPSEEK_MODEL, help="Mux model ID for Researcher (EXPLORE) agents.")
     p.add_argument("--researcher-effort", default="max", choices=list(VALID_EFFORTS), help="Effort for Researcher agents (default: max).")
-    p.add_argument("--implementer-model", default=DEFAULT_DEEPSEEK_MODEL, help="Mux model ID for Implementer/Deepen agents.")
+    p.add_argument("--implementer-model", default=DEFAULT_DEEPSEEK_MODEL, help="Mux model ID for Implementer agents.")
     p.add_argument("--implementer-effort", default="minimal", choices=list(VALID_EFFORTS), help="Effort for Implementer agents (default: minimal).")
+    p.add_argument("--deepen-model", default=None, help="Mux model ID for Deepen agents (defaults to researcher-model).")
+    p.add_argument("--deepen-effort", default="max", choices=list(VALID_EFFORTS), help="Effort for Deepen agents (default: max).")
     p.add_argument("--debugger-model", default=None, help="Mux model ID for Debugger agents (defaults to implementer-model).")
     p.add_argument("--debugger-effort", default="minimal", choices=list(VALID_EFFORTS), help="Effort for Debugger agents (default: minimal).")
     p.add_argument("--crossover-model", default=None, help="Mux model ID for Crossover agents (defaults to researcher-model).")
@@ -514,7 +519,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_setm = sub.add_parser("set-model", help="Live hot-switch model and/or effort for a specific agent role.")
     p_setm.add_argument("--workspace", required=True)
-    p_setm.add_argument("--role", required=True, choices=["researcher", "implementer", "debugger", "crossover", "all"])
+    p_setm.add_argument("--role", required=True, choices=["researcher", "implementer", "deepen", "debugger", "crossover", "all"])
     p_setm.add_argument("--model", default=None, help="New claude-mux model ID (e.g. anthropic-morph-dsv41flash, anthropic-morph-kimik31, anthropic-glm-5-3).")
     p_setm.add_argument("--effort", default=None, choices=list(VALID_EFFORTS), help="New reasoning effort (minimal, low, medium, high, xhigh, max).")
     p_setm.add_argument("--allow-model-override", action="store_true", help="Explicitly permit claude-* / Fable models despite default Sparky blocklist.")
