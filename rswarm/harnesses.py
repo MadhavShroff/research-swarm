@@ -136,13 +136,15 @@ class HarnessRunner:
         for drop in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
             env.pop(drop, None)
         bin_dir = str(self.workspace_dir / "bin")
-        env["PATH"] = f"{bin_dir}:{env.get('PATH', '/usr/bin:/bin')}"
+        cuda_bin = "/usr/local/cuda/bin"
+        extra_path = f"{bin_dir}:{cuda_bin}" if Path(cuda_bin).is_dir() else bin_dir
+        env["PATH"] = f"{extra_path}:{env.get('PATH', '/usr/bin:/bin')}"
         env["RSWARM_WORKSPACE"] = str(self.workspace_dir)
         env["RSWARM_NODE_ID"] = node_id
         env["RSWARM_SOCK"] = str(self.workspace_dir / "state" / "rswarm.sock")
-        env["OMP_NUM_THREADS"] = "1"
-        env["OPENBLAS_NUM_THREADS"] = "1"
-        env["MKL_NUM_THREADS"] = "1"
+        env["OMP_NUM_THREADS"] = "2"
+        env["OPENBLAS_NUM_THREADS"] = "2"
+        env["MKL_NUM_THREADS"] = "2"
         env["MALLOC_ARENA_MAX"] = "2"
         if extra:
             env.update(extra)
@@ -264,10 +266,10 @@ export DISABLE_AUTOUPDATER=1
 export DISABLE_UPDATES=1
 export API_TIMEOUT_MS={api_ms}
 export NODE_OPTIONS="--max-old-space-size=192"
-export OMP_NUM_THREADS=1
-export OPENBLAS_NUM_THREADS=1
+export OMP_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
 export MALLOC_ARENA_MAX=2
-export PATH={shlex.quote(str(self.workspace_dir / 'bin'))}:"$PATH"
+export PATH={shlex.quote(str(self.workspace_dir / 'bin'))}:/usr/local/cuda/bin:"$PATH"
 export RSWARM_WORKSPACE={shlex.quote(str(self.workspace_dir))}
 export RSWARM_NODE_ID={shlex.quote(node_id)}
 export RSWARM_SOCK={shlex.quote(str(self.workspace_dir / 'state' / 'rswarm.sock'))}
@@ -711,6 +713,18 @@ exec nice -n 15 {rendered}
                             "type": "tool_result",
                             "tool_use_id": tu["id"],
                             "content": res_str,
+                        }
+                    )
+                rem_post = timeout_sec - (time.monotonic() - t0)
+                if (turn >= max_turns - 2 or rem_post < 120.0) and turn < max_turns:
+                    tool_results.append(
+                        {
+                            "type": "text",
+                            "text": (
+                                "[SYSTEM FINAL-TURN FLUSH NOTICE] Fewer than 2 turns / 120s remain in this window. "
+                                "Stop exploratory tuning—immediately write your best verified results into `./candidate/`, "
+                                "run `swarm-eval`, and run `swarm-submit` NOW so zero progress is lost!"
+                            ),
                         }
                     )
                 messages.append({"role": "user", "content": tool_results})

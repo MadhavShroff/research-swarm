@@ -227,6 +227,12 @@ class SwarmCoordinator:
             if solver_dirs
             else ""
         )
+        # Surface latest Reducible-Gap Scoreboard from best/parent node metrics if available!
+        gap_line = ""
+        best_nid = stats.get("best_node_id")
+        ref_node = (self.db.get_node(str(best_nid)) if best_nid else None) or parent
+        if ref_node and ref_node.get("diagnostics"):
+            gap_line = f"- Latest Verified Diagnostics & Reducible Gap Scoreboard: `{str(ref_node['diagnostics'])[:420]}`\n"
 
         common_context = f"""## Problem Brief
 {self.cfg.brief}
@@ -238,7 +244,7 @@ Focus: {island['strategy_focus']}
 - {parent_info}
 - Global Best Score: `{stats['best_score']}` (`{stats['best_speedup']:.4f}x` over baseline)
 - Milestone Goal Score: `{stats['leaderboard_target']}` (`{self.cfg.direction}`)
-{lb1_line}{solvers_hint}- Starting Candidate in your workdir: `{copied_cand if copied_cand else './candidate/'}`
+{lb1_line}{solvers_hint}{gap_line}- Starting Candidate in your workdir: `{copied_cand if copied_cand else './candidate/'}`
 
 ## IDEAL-BACKTRACKING DISCOVERY DOCTRINE (Work Backward From the Ideal!)
 Do NOT make blind single-element random tweaks from the baseline! Achieve large structural leaps by working backward from the theoretical Ideal:
@@ -361,16 +367,17 @@ Steps:
                     novelty_threshold=None,
                 )
             else:
-                cohort_hint = f"cohort-{self._island_rr % 12 + 1}"
                 self.db.create_node(
                     island_id=iid,
                     role="IMPLEMENT",
-                    title=f"Build {isl['name']} solver ({cohort_hint})",
+                    title=f"Ideal-backtrack {isl['name']} full-scale solver",
                     hypothesis=(
-                        f"Apply `{isl['name']}` ({isl['strategy_focus']}) to improve high-gap instances "
-                        f"in `{cohort_hint}` atop parent `{pid}` (score={pscore}, {pspeed:.4f}x)."
+                        f"IDEAL BOUND: Work backward from theoretical optimum across ALL problem scales. "
+                        f"OBSTRUCTION: Overcome multi-body / parity bottlenecks on untouched regimes. "
+                        f"MECHANISM: Apply `{isl['name']}` ({isl['strategy_focus']}) atop `{pid}` (score={pscore}, {pspeed:.4f}x), "
+                        f"reusing `./solvers_vault/` and `./shared/` OpenMP/CUDA primitives across the entire instance range."
                     ),
-                    rationale=f"Direct builder dispatch on island `{isl['name']}`.",
+                    rationale=f"Full-scale Ideal-Backtracking builder dispatch on island `{isl['name']}`.",
                     parent_id=pid,
                     novelty_threshold=None,
                 )
@@ -462,18 +469,20 @@ Steps:
                 )
                 self.db.log_event("DONE", nid, f"Explorer finished in {res.elapsed_sec:.1f}s (exit={res.exit_code})")
             else:
-                # Harvest any scratch *.json artifacts in wdir into the global pool so partial cohort wins are never lost!
+                # Harvest any scratch candidate artifacts matching candidate suffix (or *.json) in wdir into the global pool!
                 best_exit_cand = copied_cand
                 newest_mtime = copied_cand.stat().st_mtime if (copied_cand and copied_cand.exists()) else 0.0
-                for jf in wdir.rglob("*.json"):
-                    if jf.is_symlink() or not jf.is_file():
+                cand_ext = copied_cand.suffix.lower() if (copied_cand and copied_cand.is_file() and copied_cand.suffix) else ".json"
+                target_exts = {cand_ext, ".json"}
+                for jf in wdir.rglob("*"):
+                    if jf.is_symlink() or not jf.is_file() or jf.suffix.lower() not in target_exts:
                         continue
                     rel_parts = jf.relative_to(wdir).parts
                     if any(part.startswith(".") or part in ("secondary_parent", "shared", "solvers_vault") for part in rel_parts):
                         continue
                     await self.eval_service.try_pool_merge(nid, jf)
                     mt = jf.stat().st_mtime
-                    if mt > newest_mtime + 0.5:
+                    if jf.suffix.lower() == cand_ext and mt > newest_mtime + 0.5:
                         newest_mtime = mt
                         best_exit_cand = jf
 
@@ -587,10 +596,17 @@ Steps:
                             break
 
                         active_exp = sum(1 for r in self.active_roles.values() if r == "EXPLORE")
-                        excl = ("EXPLORE",) if active_exp >= self.cfg.max_concurrent_researchers else ()
+                        active_imp = sum(1 for r in self.active_roles.values() if r == "IMPLEMENT")
+                        excl_list: list[str] = []
+                        if active_exp >= self.cfg.max_concurrent_researchers:
+                            excl_list.append("EXPLORE")
+                        # Reserve fast-lane slot(s) when concurrency >= 4 so DEBUG/CROSSOVER/DEEPEN/EXPLORE never wait behind IMPLEMENT!
+                        eff_reserve = min(max(0, int(self.cfg.reserved_frontier_slots)), max(0, self.cfg.concurrency - 1)) if self.cfg.concurrency >= 4 else 0
+                        if eff_reserve > 0 and active_imp >= (self.cfg.concurrency - eff_reserve):
+                            excl_list.append("IMPLEMENT")
                         next_node = self.db.claim_next_queued_node(
                             preferred_island=self._island_rr % max(1, self.cfg.num_islands),
-                            exclude_roles=excl,
+                            exclude_roles=tuple(excl_list),
                         )
                         if next_node is None:
                             break
