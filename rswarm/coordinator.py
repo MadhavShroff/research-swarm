@@ -133,17 +133,26 @@ class SwarmCoordinator:
                 shutil.rmtree(wdir)
             wdir.mkdir(parents=True, exist_ok=True)
 
-        # Symlink CLAUDE.md, skills, and shared read-only assets (zero disk/RAM bloat across 100s of agents!).
+        # Symlink CLAUDE.md, skills, shared read-only assets, and vault/solvers (zero disk/RAM bloat!).
+        solvers_dir = self.ws / "vault" / "solvers"
+        solvers_dir.mkdir(parents=True, exist_ok=True)
         for link_item in ("CLAUDE.md", ".claude", ".agents", "shared"):
             src = self.ws / link_item
             dst = wdir / link_item
             if src.exists() and not dst.exists():
                 os.symlink(src, dst)
+        sv_link = wdir / "solvers_vault"
+        if not sv_link.exists():
+            os.symlink(solvers_dir, sv_link)
 
-        # Copy mutable parent candidate on initial start; preserve agent's in-progress candidate on resume!
+        # Seed candidate from global pool (vault/best/*) if present & better, else parent candidate!
         parent = self.db.get_node(node["parent_id"]) if node.get("parent_id") else None
+        best_dir = self.ws / "vault" / "best"
+        pool_files = sorted([p for p in best_dir.iterdir() if not p.name.startswith(".")]) if best_dir.is_dir() else []
+        pool_cand_str = str(pool_files[0]) if len(pool_files) == 1 else ""
         cand_src_str = (
             node.get("candidate_path")
+            or pool_cand_str
             or (parent.get("candidate_path") if parent else "")
             or self.db.get_meta("baseline_candidate_path", "")
         )
@@ -209,6 +218,16 @@ class SwarmCoordinator:
             "Focus 100% on rigorous mathematical & algorithmic breakthroughs."
         )
 
+        lb1 = stats.get("leaderboard_number_one")
+        lb1_line = f"- Public Leaderboard #1 Score: `{lb1}` (Top-5 auto-submit gate: `{stats.get('leaderboard_submit_threshold')}`)\n" if lb1 is not None else ""
+        solvers_root = self.ws / "vault" / "solvers"
+        solver_dirs = sorted([d.name for d in solvers_root.iterdir() if d.is_dir()])[-6:] if solvers_root.is_dir() else []
+        solvers_hint = (
+            f"- Winning Reusable Solvers in `./solvers_vault/`: `{', '.join(solver_dirs)}` (inspect & extend proven fast solvers rather than starting from scratch!)\n"
+            if solver_dirs
+            else ""
+        )
+
         common_context = f"""## Problem Brief
 {self.cfg.brief}
 
@@ -218,8 +237,14 @@ Focus: {island['strategy_focus']}
 ## Current Lineage & Leaderboard State
 - {parent_info}
 - Global Best Score: `{stats['best_score']}` (`{stats['best_speedup']:.4f}x` over baseline)
-- Target Leaderboard Score: `{stats['leaderboard_target']}` (`{self.cfg.direction}`)
-- Starting Candidate in your workdir: `{copied_cand if copied_cand else './candidate/'}`
+- Milestone Goal Score: `{stats['leaderboard_target']}` (`{self.cfg.direction}`)
+{lb1_line}{solvers_hint}- Starting Candidate in your workdir: `{copied_cand if copied_cand else './candidate/'}`
+
+## IDEAL-BACKTRACKING DISCOVERY DOCTRINE (Work Backward From the Ideal!)
+Do NOT make blind single-element random tweaks from the baseline! Achieve large structural leaps by working backward from the theoretical Ideal:
+1. **Ideal Lower Bound**: State the mathematical Ideal (e.g. zero wasted area / theoretical minimum cost) and check `swarm-eval` diagnostics to see which regime/band holds the largest **reducible gap** (never waste compute on provably rigid optima!).
+2. **Obstruction Diagnosis**: Identify the exact geometric, combinatorial, or numerical obstruction blocking current `./solvers_vault/` elites from reaching the Ideal.
+3. **Universal Parametric Families + Upward Flow**: Formulate parameterized constructions or collective continuous-flow solvers (e.g. starting at the infeasible Ideal bound and relaxing overlaps upward via `./shared/` OpenMP/CUDA primitives, L-BFGS, FIRE, or exact DP) that solve **hundreds of instances across all scales simultaneously**, then polish with active-set / LP compaction!
 
 ## Live Breakthrough & Obstruction Bulletin (Learn from Sibling Streams!)
 {chr(10).join(bul_lines)}
@@ -227,17 +252,18 @@ Focus: {island['strategy_focus']}
 
         if role == "EXPLORE":
             task_prompt = f"""{common_context}
-## Your Assignment (`EXPLORE` — Fast 1-Turn Researcher Role)
+## Your Assignment (`EXPLORE` — Fast Ideal-Backtracking Researcher Role)
 CRITICAL EFFICIENCY RULE: All problem rules, scoring formulas, and Bulletin updates are already above. Do NOT spend turns running `ls` or `cat` on workspace files!
-1. Immediately invent **2 to 3 distinct, concrete, high-upside hypotheses** aligned with Island `{island['name']}` targeting specific puzzle cohorts or structural mechanisms toward `{stats['leaderboard_target']}`.
-2. In your VERY FIRST `bash` tool call, invoke `swarm-propose` 2 or 3 times back-to-back:
+1. Work backward from the Ideal bound toward Leaderboard #1 (`{lb1 or stats['leaderboard_target']}`): invent **2 to 3 distinct, high-leverage hypotheses** aligned with Island `{island['name']}` that attack the largest reducible gap across ALL scales at once.
+2. Every proposal MUST state: (a) the **Ideal bound & target regime**, (b) the **structural obstruction** it overcomes, and (c) the **exact universal family / collective solver algorithm** to implement.
+3. In your VERY FIRST `bash` tool call, invoke `swarm-propose` 2 or 3 times back-to-back:
    ```bash
    swarm-propose --parent-id "{node['node_id']}" --island-id {island['island_id']} --role IMPLEMENT \\
      --title "<concise 4-8 word title>" \\
-     --hypothesis "<exact mathematical construction, target N values, and algorithm steps to code>" \\
-     --rationale "<expected score reduction and why it differs from recent Bulletin items>"
+     --hypothesis "IDEAL BOUND: <bound>. OBSTRUCTION: <why current elites fall short>. MECHANISM: <universal parametric construction / upward-flow algorithm across full scale>." \\
+     --rationale "<expected multi-instance score drop and why it differs from recent Bulletin items>"
    ```
-3. Stop immediately after confirming `swarm-propose` succeeded.
+4. Stop immediately after confirming `swarm-propose` succeeded.
 """
         elif role == "DEBUG":
             task_prompt = f"""{common_context}
@@ -278,7 +304,7 @@ Steps:
         else:
             # IMPLEMENT or DEEPEN
             task_prompt = f"""{common_context}
-## Your Assignment (`{role}` — Hypothesis Builder & Optimizer)
+## Your Assignment (`{role}` — Ideal-Backtracking Builder & Optimizer)
 Title: **{node['title']}**
 Hypothesis:
 {node['hypothesis']}
@@ -286,13 +312,13 @@ Hypothesis:
 Rationale:
 {node['rationale']}
 
-CRITICAL EFFICIENCY RULE: All problem contracts are already above—do NOT spend turns reading `eval/` or `shared/` source files! Go straight to writing and running your solver code.
+CRITICAL EFFICIENCY RULE: Check `./solvers_vault/` and `./shared/` first for reusable high-speed C++20/OpenMP/CUDA solvers and verifiers—compound proven code rather than reinventing boilerplate!
 Steps:
-1. Write a fast Python or C++20 (`g++ -O3`) solver in your working directory that loads `{copied_cand}`, computes strictly valid improved configurations (`SAT gap >= 1e-9`) for your target instances while preserving all existing keys in `{copied_cand}` where your new solution is not strictly better, and writes the updated `{copied_cand}`.
-2. Run `swarm-eval {copied_cand}` via `bash` to verify `"valid": true` and check your new score and speedup!
-3. If `"valid": true` and score improved (or after 1 quick refinement pass), immediately submit via:
+1. Build a fast C++20 (`g++ -O3 -fopenmp`), CUDA (`nvcc -O3`), or Python solver in your working directory that starts from `{copied_cand}`, applies universal parametric constructions and/or upward collective relaxation from the Ideal bound across full puzzle/instance families, keeps existing keys wherever not strictly improved, and writes back directly to `{copied_cand}`.
+2. Run `swarm-eval {copied_cand}` via `bash` to verify `"valid": true`, inspect the Reducible Gap Scoreboard, and trigger automatic Global Pool merging!
+3. Once `"valid": true` (and after 1 focused refinement pass if time permits), immediately submit via:
    ```bash
-   swarm-submit {copied_cand} --summary "<what you built, which instances improved, and verified score>"
+   swarm-submit {copied_cand} --summary "<mechanism, instances improved, and verified score>"
    ```
 """
         return system_prompt, task_prompt
@@ -436,13 +462,28 @@ Steps:
                 )
                 self.db.log_event("DONE", nid, f"Explorer finished in {res.elapsed_sec:.1f}s (exit={res.exit_code})")
             else:
-                # Belt-and-suspenders: if implementer edited `copied_cand` without calling `swarm-submit`, auto-submit!
+                # Harvest any scratch *.json artifacts in wdir into the global pool so partial cohort wins are never lost!
+                best_exit_cand = copied_cand
+                newest_mtime = copied_cand.stat().st_mtime if (copied_cand and copied_cand.exists()) else 0.0
+                for jf in wdir.rglob("*.json"):
+                    if jf.is_symlink() or not jf.is_file():
+                        continue
+                    rel_parts = jf.relative_to(wdir).parts
+                    if any(part.startswith(".") or part in ("secondary_parent", "shared", "solvers_vault") for part in rel_parts):
+                        continue
+                    await self.eval_service.try_pool_merge(nid, jf)
+                    mt = jf.stat().st_mtime
+                    if mt > newest_mtime + 0.5:
+                        newest_mtime = mt
+                        best_exit_cand = jf
+
+                # Belt-and-suspenders: if implementer exited without calling `swarm-submit`, auto-submit!
                 if refreshed["status"] == "RUNNING":
-                    if copied_cand and copied_cand.exists():
+                    if best_exit_cand and best_exit_cand.exists():
                         await self.eval_service.handle_submit(
                             {
                                 "node_id": nid,
-                                "candidate_path": str(copied_cand),
+                                "candidate_path": str(best_exit_cand),
                                 "summary": f"(Auto-harvested on agent exit={res.exit_code}) {res.final_text[-500:]}",
                                 "request_hosted": False,
                             }

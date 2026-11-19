@@ -410,31 +410,41 @@ class SwarmDB:
         """Atomically transition the highest-priority QUEUED node to RUNNING."""
         role_priority = {
             "DEBUG": 0,
-            "IMPLEMENT": 1,
+            "CROSSOVER": 1,
             "DEEPEN": 2,
-            "CROSSOVER": 3,
-            "EXPLORE": 4,
+            "EXPLORE": 3,
+            "IMPLEMENT": 4,
         }
+        role_case_sql = (
+            "CASE role "
+            "WHEN 'DEBUG' THEN 0 "
+            "WHEN 'CROSSOVER' THEN 1 "
+            "WHEN 'DEEPEN' THEN 2 "
+            "WHEN 'EXPLORE' THEN 3 "
+            "ELSE 4 END"
+        )
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if exclude_roles:
                 placeholders = ",".join("?" for _ in exclude_roles)
                 rows = conn.execute(
-                    f"SELECT * FROM nodes WHERE status='QUEUED' AND role NOT IN ({placeholders}) ORDER BY created_at ASC LIMIT 64",
+                    f"SELECT * FROM nodes WHERE status='QUEUED' AND role NOT IN ({placeholders}) "
+                    f"ORDER BY {role_case_sql} ASC, created_at ASC LIMIT 64",
                     exclude_roles,
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM nodes WHERE status='QUEUED' ORDER BY created_at ASC LIMIT 64"
+                    f"SELECT * FROM nodes WHERE status='QUEUED' "
+                    f"ORDER BY {role_case_sql} ASC, created_at ASC LIMIT 64"
                 ).fetchall()
             if not rows:
                 conn.execute("COMMIT")
                 return None
 
             def _sort_key(r: sqlite3.Row) -> tuple[int, int, float]:
-                isl_match = 0 if (preferred_island is not None and r["island_id"] == preferred_island) else 1
                 rp = role_priority.get(r["role"], 5)
-                return (isl_match, rp, float(r["created_at"]))
+                isl_match = 0 if (preferred_island is not None and r["island_id"] == preferred_island) else 1
+                return (rp, isl_match, float(r["created_at"]))
 
             chosen = sorted(rows, key=_sort_key)[0]
             now = time.time()

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import SwarmDB
-from .models import SwarmConfig, meets_or_beats_score
+from .models import SwarmConfig, compute_speedup_and_progress, is_better_score, meets_or_beats_score
 
 
 def send_rpc_request(sock_path: str | Path, payload: dict[str, Any], timeout_sec: float = 240.0) -> dict[str, Any]:
@@ -70,6 +70,7 @@ class EvalAndTreeService:
         self.ws = Path(cfg.workspace_dir)
         self.sock_path = self.ws / "state" / "rswarm.sock"
         self.eval_sem = asyncio.Semaphore(cfg.eval_workers)
+        self._pool_lock = asyncio.Lock()
         self._server: asyncio.AbstractServer | None = None
 
     async def start_rpc_server(self) -> None:
@@ -253,7 +254,104 @@ class EvalAndTreeService:
             node_id,
             f"Eval valid={raw['valid']} score={raw['score']} speedup={rec['speedup_vs_baseline']:.4f}x ({raw['eval_ms']:.0f}ms)",
         )
-        return {"ok": True, **rec, "metrics": raw["metrics"]}
+        pool_res = None
+        if raw["valid"]:
+            pool_res = await self.try_pool_merge(node_id, cpath)
+        return {"ok": True, **rec, "metrics": raw["metrics"], "pool_merge": pool_res}
+
+    def _promote_node_solvers_to_vault(self, node_id: str) -> None:
+        """Archive winning C++/CUDA/Python solver code into vault/solvers/<node_id>/ so children compound algorithms."""
+        wdir = self.ws / "work" / node_id
+        if not wdir.is_dir():
+            return
+        exts = {".cpp", ".cc", ".cxx", ".h", ".hpp", ".cu", ".cuh", ".py", ".sh"}
+        found: list[Path] = []
+        for p in wdir.rglob("*"):
+            if p.is_symlink() or not p.is_file():
+                continue
+            rel_parts = p.relative_to(wdir).parts
+            if any(part.startswith(".") or part in ("candidate", "secondary_parent", "shared", "solvers_vault") for part in rel_parts):
+                continue
+            if p.suffix.lower() in exts and p.stat().st_size <= 512_000:
+                found.append(p)
+        if not found:
+            return
+        dest_root = self.ws / "vault" / "solvers" / node_id
+        dest_root.mkdir(parents=True, exist_ok=True)
+        for p in found[:16]:
+            rel = p.relative_to(wdir)
+            out_p = dest_root / rel
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, out_p)
+
+    async def try_pool_merge(self, node_id: str | None, candidate_path: Path) -> dict[str, Any] | None:
+        """If workspace provides `eval/merge_pool.sh`, merge per-subproblem elites into `vault/best/`."""
+        merge_script = self.ws / "eval" / "merge_pool.sh"
+        if not merge_script.is_file() or not candidate_path.exists():
+            return None
+        best_dir = self.ws / "vault" / "best"
+        best_dir.mkdir(parents=True, exist_ok=True)
+        async with self._pool_lock:
+            proc = await asyncio.create_subprocess_exec(
+                "bash",
+                str(merge_script),
+                str(candidate_path),
+                str(best_dir),
+                cwd=str(self.ws),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=self.cfg.eval_timeout_sec)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return None
+            if proc.returncode != 0:
+                return None
+            try:
+                parsed = parse_eval_json_output(out_b.decode("utf-8", errors="replace"))
+            except ValueError:
+                return None
+            if not parsed.get("valid") or parsed.get("score") is None:
+                return parsed
+            new_score = float(parsed["score"])
+            merged_cnt = int(parsed.get("merged_count") or 0)
+            cur_best = self.db.get_meta("best_score")
+            baseline = self.db.get_meta("baseline_score")
+            target = self.db.get_meta("leaderboard_target")
+            if cur_best is None or is_better_score(new_score, float(cur_best), self.cfg.direction):
+                sp, gp = compute_speedup_and_progress(new_score, baseline, target, self.cfg.direction)
+                self.db.set_meta("best_score", new_score)
+                self.db.set_meta("best_speedup", sp)
+                self.db.set_meta("best_goal_progress", gp)
+                if node_id:
+                    self.db.set_meta("best_node_id", node_id)
+                msg = (
+                    f"[POOL UNION SOTA] Merged {merged_cnt} sub-instance win(s) from {node_id or candidate_path.name} "
+                    f"-> new Global Best score={new_score} ({sp:.4f}x)!"
+                )
+                self.db.post_bulletin("BREAKTHROUGH", msg, node_id=node_id, score=new_score, speedup=sp)
+                self.db.add_diary(
+                    "BREAKTHROUGH",
+                    f"POOL UNION SOTA: {new_score} ({sp:.4f}x)",
+                    f"Merged {merged_cnt} improved sub-instances from {candidate_path} into {best_dir}.\nDiagnostics: {parsed.get('diagnostics', '')}",
+                    node_id=node_id,
+                    score=new_score,
+                    speedup=sp,
+                )
+                self.db.log_event("BREAKTHROUGH", node_id or "pool", msg)
+                sub_thresh = self.cfg.leaderboard_submit_threshold
+                best_cand_path = str(parsed.get("best_path") or best_dir)
+                if sub_thresh is not None and meets_or_beats_score(new_score, float(sub_thresh), self.cfg.direction):
+                    await self.handle_hosted_submit(
+                        {
+                            "node_id": node_id,
+                            "candidate_path": best_cand_path,
+                            "note": f"Pool union reached Top-5 ({new_score})",
+                            "verified_score": new_score,
+                        }
+                    )
+            return parsed
 
     async def handle_propose(self, req: dict[str, Any]) -> dict[str, Any]:
         parent_id = req.get("parent_id") or self.db.get_meta("best_node_id") or self.db.get_meta("baseline_node_id")
@@ -335,13 +433,14 @@ class EvalAndTreeService:
 
         # Case 2: Breakthrough! Promote to Vault, broadcast Bulletin, and multiply the tree!
         if eval_res["is_breakthrough"]:
+            self._promote_node_solvers_to_vault(node_id)
             vault_node_dir = self.ws / "vault" / node_id
             cpath = Path(cand_str).resolve()
             vault_target = vault_node_dir / cpath.name
             self._copy_candidate_snapshot(cpath, vault_target)
             self.db.update_node_runtime(node_id, candidate_path=str(vault_target))
 
-            if eval_res["beat_global"]:
+            if eval_res["beat_global"] and not (self.ws / "eval" / "merge_pool.sh").is_file():
                 best_dir = self.ws / "vault" / "best"
                 self._copy_candidate_snapshot(cpath, best_dir / cpath.name)
 
