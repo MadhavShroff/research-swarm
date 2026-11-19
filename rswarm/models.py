@@ -222,6 +222,7 @@ class SwarmConfig:
     max_heavy_mux_procs: int = 24
     eval_workers: int = 4
     num_islands: int = 5
+    max_active_islands: int = 6
     max_debug_depth: int = 2
     max_deepen_depth: int = 1
     meta_interval_evals: int = 20

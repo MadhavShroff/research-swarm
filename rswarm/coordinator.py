@@ -152,6 +152,9 @@ class SwarmCoordinator:
         solvers_dir = self.ws / "vault" / "solvers"
         solvers_dir.mkdir(parents=True, exist_ok=True)
         (self.ws / "shared" / "seeds_queue").mkdir(parents=True, exist_ok=True)
+        (self.ws / "shared" / "literature").mkdir(parents=True, exist_ok=True)
+        (self.ws / "shared" / "cache").mkdir(parents=True, exist_ok=True)
+        self._refresh_workspace_index()
         for link_item in ("CLAUDE.md", ".claude", ".agents", "shared"):
             src = self.ws / link_item
             dst = wdir / link_item
@@ -241,6 +244,40 @@ class SwarmCoordinator:
 
         return wdir, copied_cand
 
+    def _refresh_workspace_index(self) -> str:
+        """Maintain `<workspace>/shared/WORKSPACE_INDEX.md` so agents never waste turns running ls/find/cat."""
+        shared_dir = self.ws / "shared"
+        shared_dir.mkdir(parents=True, exist_ok=True)
+        solvers_root = self.ws / "vault" / "solvers"
+        lit_dir = shared_dir / "literature"
+
+        shared_files = sorted([p.name for p in shared_dir.iterdir() if not p.name.startswith(".")])[:20] if shared_dir.is_dir() else []
+        solver_entries: list[str] = []
+        if solvers_root.is_dir():
+            for d in sorted([x for x in solvers_root.iterdir() if x.is_dir()])[-10:]:
+                sub_f = sorted([f.name for f in d.rglob("*") if f.is_file()])[:8]
+                solver_entries.append(f"`{d.name}/` ({', '.join(sub_f)})")
+        lit_files = sorted([p.name for p in lit_dir.glob("*.md")])[:16] if lit_dir.is_dir() else []
+
+        digest = (
+            "## Zero-Recon Workspace Map (`./shared/WORKSPACE_INDEX.md`)\n"
+            "- **DO NOT waste turns running `ls`, `find`, or baseline `swarm-eval` on your unmodified starting `./candidate/`!** Everything is indexed right here:\n"
+            "- **Literature & Internet Search CLI**:\n"
+            "  - `swarm-search \"<query>\" [--source all|papers|mathoverflow|github|wiki]` -> searches OpenAlex (178k+ papers), Semantic Scholar, Crossref, MathOverflow, GitHub, and Wikipedia in `<1.5s`.\n"
+            "  - `swarm-fetch \"<arxiv_id_or_pdf_or_url>\" --save-slug \"<slug>\"` -> extracts full PDF (`pdftotext`), arXiv `.tex`, or HTML into `./shared/literature/<slug>.md`.\n"
+            + (f"  - Cached Papers Ready in `./shared/literature/`: `{', '.join(lit_files)}`\n" if lit_files else "")
+            + "- **Instant `<15ms` Sparse Patch Verifier & Merger**:\n"
+            + "  - `swarm-check <my_patch.json> --apply` -> verifies ONLY the modified subproblems in `<my_patch.json>` in `<15ms`, reports exact per-instance wins or overlap pairs, and atomically updates `./candidate/` + `vault/best` without rewriting 38 MB JSONs!\n"
+            + "- **Dynamic Paradigm Islands**: `swarm-island --name \"<slug>\" --focus \"<orthogonal mathematical paradigm>\"` (for `META` agents).\n"
+            + f"- **Shared Pre-Compiled Tools & SDK in `./shared/`**: `{', '.join(shared_files)}`\n"
+            + (f"- **Winning Solvers in `./solvers_vault/`**: {'; '.join(solver_entries)}\n" if solver_entries else "")
+        )
+        try:
+            (shared_dir / "WORKSPACE_INDEX.md").write_text(digest)
+        except OSError:
+            pass
+        return digest
+
     def _next_target_slice(self) -> str:
         slices = self.db.get_gap_slices()
         if not slices:
@@ -290,7 +327,7 @@ class SwarmCoordinator:
             f"current_global_best={stats['best_score']} [{stats['best_speedup']:.4f}x], "
             f"target_to_beat={stats['leaderboard_target']}).\n"
             f"Your Node ID is `{node['node_id']}` on Research Island #{island['island_id']} (`{island['name']}`).\n"
-            "CLI skills on your PATH: `swarm-eval`, `swarm-propose`, `swarm-submit`, `swarm-directive`, `swarm-hosted-submit`.\n"
+            "CLI skills on your PATH: `swarm-search`, `swarm-fetch`, `swarm-check`, `swarm-eval`, `swarm-propose`, `swarm-submit`, `swarm-directive`, `swarm-island`, `swarm-hosted-submit`.\n"
             f"Never modify `eval/` (it is read-only) and do NOT read `{engine_root}` engine internals. "
             "Focus 100% on rigorous mathematical & algorithmic breakthroughs."
         )
@@ -360,7 +397,8 @@ class SwarmCoordinator:
                 "- Do NOT block for 10+ minutes running slow Python loops! Write fast (`<30s`) parametric/constructive generators or targeted C++20/CUDA sweeps, evaluate & submit your immediate gain, AND drop promising structural seed candidates into `./shared/seeds_queue/<node_id>_<tag>.json` so Sparky's continuous background C++/CUDA polisher compacts them further into `vault/best` with zero token wait!\n"
             )
 
-        seed_note = f" (starting seed_score=`{node.get('seed_score')}` — you MUST strictly beat `{node.get('seed_score')}` or improve individual subproblems in `vault/best` to earn a Breakthrough!)" if node.get("seed_score") is not None else ""
+        ws_map_block = self._refresh_workspace_index()
+        seed_note = f" (pre-verified starting seed_score=`{node.get('seed_score')}` — DO NOT run `swarm-eval` before making changes!)" if node.get("seed_score") is not None else ""
 
         common_context = f"""## Problem Brief
 {self.cfg.brief}
@@ -373,12 +411,13 @@ Focus: {island['strategy_focus']}
 - Global Best Score: `{stats['best_score']}` (`{stats['best_speedup']:.4f}x` over baseline)
 - Milestone Goal Score: `{stats['leaderboard_target']}` (`{self.cfg.direction}`)
 {lb1_line}{solvers_hint}{gap_line}- Starting Candidate in your workdir: `{copied_cand if copied_cand else './candidate/'}`{seed_note}
-{dir_block}{slice_block}{ledger_block}{tabu_block}{offload_block}
+
+{ws_map_block}{dir_block}{slice_block}{ledger_block}{tabu_block}{offload_block}
 ## IDEAL-BACKTRACKING DISCOVERY DOCTRINE (Work Backward From the Ideal!)
 Do NOT make blind single-element random tweaks from the baseline! Achieve large structural leaps by working backward from the theoretical Ideal:
-1. **Ideal Lower Bound**: State the mathematical Ideal (e.g. zero wasted area / theoretical minimum cost) and check `swarm-eval` diagnostics & `./shared/gap_ledger.json` to target the highest marginal-weight **reducible gap** (never waste compute on provably rigid optima!).
+1. **Ideal Lower Bound & Literature Grounding**: State the mathematical Ideal, check `./shared/literature/` or run `swarm-search` / `swarm-fetch` for proven theorems/constructions, and target the highest marginal-weight **reducible gap**.
 2. **Obstruction Diagnosis**: Identify the exact geometric, combinatorial, or numerical obstruction blocking current `./solvers_vault/` elites from reaching the Ideal.
-3. **Universal Parametric Families + Upward Flow**: Formulate parameterized constructions or collective continuous-flow solvers (e.g. multi-angle rational-slope strip families, Göbel/fault-line channels, or active-set sequential LP compaction) on your assigned slice, then polish!
+3. **Universal Parametric Families + Fast `<15ms` Patch Loop**: Test small/targeted patches instantly via `swarm-check patch.json --apply`, scale winners across full regimes, then submit!
 
 ## Live Breakthrough & Obstruction Bulletin (Learn from Sibling Streams!)
 {chr(10).join(bul_lines)}
@@ -386,43 +425,45 @@ Do NOT make blind single-element random tweaks from the baseline! Achieve large 
 
         if role == "META":
             telem = self.db.compile_meta_telemetry()
+            active_isl_ids = [int(i["island_id"]) for i in self.db.get_islands()]
             task_prompt = f"""{common_context}
-## Your Assignment (`META` — Autonomous Chief Research Strategist & Self-Optimizer)
-You are triggered automatically by the swarm's self-audit loop to diagnose stagnation, eliminate wasted effort, and direct the fleet onto the highest-yield mathematical leaps toward `{lb1 or stats['leaderboard_target']}`.
+## Your Assignment (`META` — Autonomous Chief Research Strategist, Literature Scout & Island Architect)
+You are triggered automatically by the swarm's self-audit loop to search academic literature, retire stagnant islands, spawn orthogonal paradigm islands, and dispatch sharded breakthroughs toward `{lb1 or stats['leaderboard_target']}`.
 
 ### Live Quantitative Swarm Telemetry
 ```json
 {json.dumps(telem, indent=2)[:4200]}
 ```
 
-### Mandatory Actions (Execute in 1-2 Fast Tool Turns, No Code Compilation Needed):
-1. Analyze where the remaining gap (`{stats['best_score']}` vs `{lb1 or stats['leaderboard_target']}`) lives across regimes/bands (`gap_slices` / `./shared/gap_ledger.json`) and which approaches in `recent_obstructions` are exhausted dead ends.
-2. Broadcast a crisp, concrete mathematical & algorithmic directive to all workers via `swarm-directive`:
+### Mandatory Actions (Execute in 2-3 Fast Tool Turns):
+1. **Literature & Web Search (`swarm-search` / `swarm-fetch`)**: Search academic papers, MathOverflow, and GitHub for exact constructions targeting our largest remaining gap slices (check `./shared/literature/INDEX.md` first so you build on already-cached papers, then run `swarm-search "<focused mathematical query>"` and `swarm-fetch "<pdf_or_arxiv_url>" --save-slug "<slug>"` for any high-value paper!).
+2. **Dynamic Island Evolution (`swarm-island`)**: Inspect `islands` in the telemetry above. If ANY active island has `consecutive_obstructions >= 12` OR your literature search uncovers a genuinely orthogonal paradigm not represented by active islands `{active_isl_ids}`, spawn a new paradigm island (automatically archiving the most-stagnant island if at cap):
    ```bash
-   swarm-directive --directive "<1-3 sentences naming exact mathematical constructions, target slices/regimes, marginal score weights, and dead-end methods to stop repeating>"
+   swarm-island --name "<2-3-word-slug>" --focus "<precise mathematical paradigm, paper reference, and solver family>"
    ```
-3. Immediately enqueue **3 to 4 orthogonal, shard-specific `IMPLEMENT` breakthroughs** distributed across islands (`0..{max(0, self.cfg.num_islands - 1)}`) using `swarm-propose` with `--target-slice`:
+3. **Pin Strategy Directive (`swarm-directive`)** & **Dispatch 3-4 Sharded `IMPLEMENT` Builders (`swarm-propose`)**:
    ```bash
-   swarm-propose --island-id <0..{max(0, self.cfg.num_islands - 1)}> --role IMPLEMENT \\
+   swarm-directive --directive "<1-3 sentences citing exact literature constructions, target slices, and dead-end methods to stop repeating>"
+   swarm-propose --island-id <active_island_id> --role IMPLEMENT \\
      --target-slice "<specific regime/band slice>" \\
      --title "<concise 4-8 word mathematical mechanism>" \\
-     --hypothesis "IDEAL BOUND: <bound>. OBSTRUCTION: <exact bottleneck>. MECHANISM: <concrete parametric construction / solver algorithm on this slice>." \\
+     --hypothesis "IDEAL BOUND: <bound>. LITERATURE/THEOREM: <paper/formula in ./shared/literature/>. OBSTRUCTION: <exact bottleneck>. MECHANISM: <concrete C++/CUDA/Python algorithm>." \\
      --rationale "<quantified expected score drop on this slice>"
    ```
-4. Stop immediately once `swarm-directive` and `swarm-propose` calls succeed.
+4. Stop immediately once `swarm-directive` and `swarm-propose` succeed.
 """
         elif role == "EXPLORE":
             task_prompt = f"""{common_context}
-## Your Assignment (`EXPLORE` — Fast Ideal-Backtracking Researcher Role)
-CRITICAL EFFICIENCY RULE: All problem rules, scoring formulas, Strategy Directives, Gap Ledger, and Tabu Obstructions are already above. Do NOT spend turns running `ls` or `cat` on workspace files!
-1. Work backward from the Ideal bound toward Leaderboard #1 (`{lb1 or stats['leaderboard_target']}`): invent **2 to 3 distinct, high-leverage hypotheses** aligned with Island `{island['name']}` that target distinct high-yield slices from the Gap Ledger and avoid every item in the Tabu list.
-2. Every proposal MUST state: (a) the **Ideal bound & target slice**, (b) the **structural obstruction** it overcomes, and (c) the **exact parametric family / solver algorithm** to implement.
-3. In your VERY FIRST `bash` tool call, invoke `swarm-propose` 2 or 3 times back-to-back (including `--target-slice`):
+## Your Assignment (`EXPLORE` — Literature-Grounded Ideal-Backtracking Researcher)
+CRITICAL EFFICIENCY RULE: All workspace structure, Gap Ledger, and Tabu Obstructions are already above—do NOT run `ls` or `cat` on workspace boilerplate!
+1. **Search Papers & Proofs First (`swarm-search` / `swarm-fetch`)**: Run 1 focused `swarm-search "<mathematical construction query>"` (and `swarm-fetch` if a paper has an open PDF/arXiv link not yet in `./shared/literature/`) to ground your ideas in real mathematical literature rather than guessing!
+2. Work backward from the Ideal bound toward Leaderboard #1 (`{lb1 or stats['leaderboard_target']}`): invent **2 to 3 distinct, literature-backed hypotheses** aligned with Island `{island['name']}` that target high-yield slices and avoid every item in the Tabu list.
+3. Invoke `swarm-propose` 2 or 3 times back-to-back (including `--target-slice` and citing any `./shared/literature/` paper):
    ```bash
    swarm-propose --parent-id "{node['node_id']}" --island-id {island['island_id']} --role IMPLEMENT \\
      --target-slice "<target regime or scale band>" \\
      --title "<concise 4-8 word title>" \\
-     --hypothesis "IDEAL BOUND: <bound>. OBSTRUCTION: <why current elites fall short>. MECHANISM: <universal parametric construction / upward-flow algorithm>." \\
+     --hypothesis "IDEAL BOUND: <bound>. LITERATURE: <paper/construction>. OBSTRUCTION: <why current elites fall short>. MECHANISM: <universal parametric construction / solver algorithm>." \\
      --rationale "<expected score drop on target slice and why it differs from Tabu items>"
    ```
 4. Stop immediately after confirming `swarm-propose` succeeded.
@@ -470,14 +511,11 @@ Hypothesis:
 Rationale:
 {node['rationale']}
 
-CRITICAL EFFICIENCY RULE: Check `./solvers_vault/` and `./shared/` first for reusable high-speed C++20/OpenMP/CUDA solvers and verifiers—compound proven code rather than reinventing boilerplate!
+CRITICAL EFFICIENCY RULE: Read `./shared/WORKSPACE_INDEX.md` & `./shared/literature/` (or run `swarm-search` if you need an exact formula) and compound `./solvers_vault/` + `./shared/packing_sdk.hpp` instead of writing boilerplate from scratch!
 Steps:
-1. Build a fast C++20 (`g++ -O3 -fopenmp`), CUDA (`nvcc -O3`), or Python solver in your working directory that starts from `{copied_cand}`, applies universal parametric constructions and/or upward collective relaxation from the Ideal bound across full puzzle/instance families, keeps existing keys wherever not strictly improved, and writes back directly to `{copied_cand}`.
-2. Run `swarm-eval {copied_cand}` via `bash` to verify `"valid": true`, inspect the Reducible Gap Scoreboard, and trigger automatic Global Pool merging!
-3. Once `"valid": true` (and after 1 focused refinement pass if time permits), immediately submit via:
-   ```bash
-   swarm-submit {copied_cand} --summary "<mechanism, instances improved, and verified score>"
-   ```
+1. Build a fast C++20 (`g++ -O3 -fopenmp`, optionally `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python solver in your working directory targeting your assigned slice, emitting ONLY your newly generated/improved subproblems into a small `patch.json`.
+2. Verify & merge your patch in `<15ms` via `swarm-check patch.json --apply --candidate {copied_cand}` (checks exact 128-bit SAT clearance, prints per-instance wins or overlap pairs, and atomically merges valid wins into `{copied_cand}` + `vault/best`!).
+3. Once your improvements are merged, run `swarm-submit {copied_cand} --summary "<literature/mechanism used, instances improved, and verified score>"`!
 """
         return system_prompt, task_prompt
 

@@ -31,6 +31,7 @@ from .models import (
     SwarmConfig,
     slugify,
 )
+from .research_tools import fetch_paper_or_url, search_literature_and_web
 from .rpc import EvalAndTreeService, send_rpc_request
 from .tmux_pool import TmuxPool
 from .tui import run_with_tui
@@ -423,6 +424,56 @@ async def _cmd_agent_rpc(args: argparse.Namespace) -> int:
             "node_id": node_id,
             "directive": args.directive,
         }
+    elif sub == "island":
+        payload = {
+            "action": "island",
+            "node_id": node_id,
+            "name": args.name,
+            "focus": args.focus,
+            "retire_island_id": args.retire_island,
+        }
+    elif sub == "search":
+        lit_dir = ws / "shared" / "literature"
+        res = search_literature_and_web(
+            args.query,
+            source=args.source,
+            limit=args.limit,
+            literature_dir=lit_dir,
+        )
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("ok") else 1
+    elif sub == "fetch":
+        lit_dir = ws / "shared" / "literature"
+        res = fetch_paper_or_url(
+            args.target,
+            literature_dir=lit_dir,
+            save_slug=args.save_slug or "",
+            max_chars=args.max_chars,
+        )
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("ok") else 1
+    elif sub == "check":
+        patch_p = Path(args.patch).resolve()
+        cand_p = Path(args.candidate).resolve() if args.candidate else (Path.cwd() / "candidate" / "overrides.json")
+        qc_script = ws / "eval" / "quick_check.sh"
+        if qc_script.is_file():
+            cmd = ["bash", str(qc_script), str(patch_p), str(cand_p)]
+            if args.apply:
+                cmd.append("--apply")
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+            )
+            out_b, _ = await proc.communicate()
+            out_s = out_b.decode("utf-8", errors="replace").strip()
+            print(out_s)
+            if args.apply and proc.returncode == 0 and cand_p.exists() and sock.exists():
+                try:
+                    send_rpc_request(sock, {"action": "pool_merge", "node_id": node_id, "candidate_path": str(cand_p)})
+                except OSError:
+                    pass
+            return proc.returncode
+        # Generic fallback when workspace has no quick_check.sh: run standard eval on patch_p
+        payload = {"action": "eval", "node_id": node_id, "candidate_path": str(patch_p)}
     elif sub == "submit":
         payload = {
             "action": "submit",
@@ -458,6 +509,8 @@ async def _cmd_agent_rpc(args: argparse.Namespace) -> int:
         res = await svc.handle_propose(payload)
     elif sub == "directive":
         res = await svc.handle_directive(payload)
+    elif sub == "island":
+        res = await svc.handle_island(payload)
     elif sub == "submit":
         res = await svc.handle_submit(payload)
     else:
@@ -582,6 +635,34 @@ def build_parser() -> argparse.ArgumentParser:
     ag_dir.add_argument("--directive", required=True)
     ag_dir.add_argument("--workspace", default=None)
     ag_dir.add_argument("--node-id", default=None)
+
+    ag_isl = ag_sub.add_parser("island")
+    ag_isl.add_argument("--name", required=True)
+    ag_isl.add_argument("--focus", required=True)
+    ag_isl.add_argument("--retire-island", type=int, default=None)
+    ag_isl.add_argument("--workspace", default=None)
+    ag_isl.add_argument("--node-id", default=None)
+
+    ag_srch = ag_sub.add_parser("search")
+    ag_srch.add_argument("query")
+    ag_srch.add_argument("--source", default="all", choices=["all", "papers", "mathoverflow", "github", "wiki"])
+    ag_srch.add_argument("--limit", type=int, default=6)
+    ag_srch.add_argument("--workspace", default=None)
+    ag_srch.add_argument("--node-id", default=None)
+
+    ag_ftch = ag_sub.add_parser("fetch")
+    ag_ftch.add_argument("target")
+    ag_ftch.add_argument("--save-slug", default="")
+    ag_ftch.add_argument("--max-chars", type=int, default=24000)
+    ag_ftch.add_argument("--workspace", default=None)
+    ag_ftch.add_argument("--node-id", default=None)
+
+    ag_chk = ag_sub.add_parser("check")
+    ag_chk.add_argument("patch")
+    ag_chk.add_argument("--apply", action="store_true")
+    ag_chk.add_argument("--candidate", default=None)
+    ag_chk.add_argument("--workspace", default=None)
+    ag_chk.add_argument("--node-id", default=None)
 
     ag_subm = ag_sub.add_parser("submit")
     ag_subm.add_argument("candidate")

@@ -109,6 +109,12 @@ class EvalAndTreeService:
                 res = await self.handle_propose(req)
             elif action == "directive":
                 res = await self.handle_directive(req)
+            elif action == "island":
+                res = await self.handle_island(req)
+            elif action == "pool_merge":
+                cpath = Path(str(req.get("candidate_path") or "")).resolve()
+                pm = await self.try_pool_merge(req.get("node_id"), cpath)
+                res = {"ok": True, "pool_merge": pm}
             elif action == "submit":
                 res = await self.handle_submit(req)
             elif action == "hosted_submit":
@@ -393,6 +399,44 @@ class EvalAndTreeService:
         directives = self.db.add_strategy_directive(directive, node_id=node_id)
         self.db.log_event("STRATEGY", node_id or "meta", f"Pinned strategy directive: {directive[:180]}")
         return {"ok": True, "directives": directives}
+
+    async def handle_island(self, req: dict[str, Any]) -> dict[str, Any]:
+        node_id = str(req.get("node_id") or "").strip() or None
+        name = str(req.get("name") or "").strip()
+        focus = str(req.get("focus") or "").strip()
+        retire_raw = req.get("retire_island_id")
+        retire_id = int(retire_raw) if retire_raw is not None and str(retire_raw).strip() != "" else None
+        if not name or not focus:
+            return {"ok": False, "error": "Both --name and --focus are required"}
+        res = self.db.spawn_or_replace_island(
+            name=name,
+            strategy_focus=focus,
+            max_active=self.cfg.max_active_islands,
+            retire_island_id=retire_id,
+        )
+        if res.get("created"):
+            new_iid = int(res["island_id"])
+            best_nid = self.db.get_meta("best_node_id") or self.db.get_meta("baseline_node_id")
+            self.db.create_node(
+                island_id=new_iid,
+                role="EXPLORE",
+                title=f"Literature-grounded frontier on {res['name']}",
+                hypothesis=f"Search papers (`swarm-search`) and propose 2-3 high-leverage constructions along new paradigm `{res['name']}`: {focus[:300]}",
+                rationale=f"Seed new Research Island #{new_iid} created by {node_id or 'META'}.",
+                parent_id=best_nid,
+                novelty_threshold=None,
+            )
+            self.db.create_node(
+                island_id=new_iid,
+                role="IMPLEMENT",
+                title=f"Initial {res['name']} paradigm builder",
+                hypothesis=f"IDEAL BOUND: Attack remaining gap via new island `{res['name']}`. MECHANISM: {focus[:500]}",
+                rationale=f"Immediate builder dispatch on newly spawned Island #{new_iid}.",
+                parent_id=best_nid,
+                novelty_threshold=None,
+            )
+            self.db.log_event("STRATEGY", node_id or "meta", f"Spawned Island #{new_iid} ({res['name']}), retired={res.get('retired_island_id')}")
+        return res
 
     async def handle_propose(self, req: dict[str, Any]) -> dict[str, Any]:
         parent_id = req.get("parent_id") or self.db.get_meta("best_node_id") or self.db.get_meta("baseline_node_id")

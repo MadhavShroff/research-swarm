@@ -78,7 +78,9 @@ class SwarmDB:
                     best_speedup REAL DEFAULT 1.0,
                     best_node_id TEXT,
                     eval_count INTEGER DEFAULT 0,
-                    breakthrough_count INTEGER DEFAULT 0
+                    breakthrough_count INTEGER DEFAULT 0,
+                    consecutive_obstructions INTEGER DEFAULT 0,
+                    archived INTEGER DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS nodes (
@@ -185,6 +187,11 @@ class SwarmDB:
                 conn.execute("ALTER TABLE nodes ADD COLUMN seed_score REAL")
             if "target_slice" not in cols:
                 conn.execute("ALTER TABLE nodes ADD COLUMN target_slice TEXT DEFAULT ''")
+            isl_cols = {r["name"] for r in conn.execute("PRAGMA table_info(islands)").fetchall()}
+            if "consecutive_obstructions" not in isl_cols:
+                conn.execute("ALTER TABLE islands ADD COLUMN consecutive_obstructions INTEGER DEFAULT 0")
+            if "archived" not in isl_cols:
+                conn.execute("ALTER TABLE islands ADD COLUMN archived INTEGER DEFAULT 0")
             existing_runs = conn.execute("SELECT COUNT(*) AS c FROM eval_runs").fetchone()["c"]
             if int(existing_runs) == 0:
                 conn.execute(
@@ -300,10 +307,88 @@ class SwarmDB:
                     ),
                 )
 
-    def get_islands(self) -> list[dict[str, Any]]:
+    def get_islands(self, include_archived: bool = False) -> list[dict[str, Any]]:
         with self._lock, self._connect() as conn:
-            rows = conn.execute("SELECT * FROM islands ORDER BY island_id ASC").fetchall()
+            if include_archived:
+                rows = conn.execute("SELECT * FROM islands ORDER BY island_id ASC").fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM islands WHERE COALESCE(archived, 0) = 0 ORDER BY island_id ASC").fetchall()
+                if not rows:
+                    rows = conn.execute("SELECT * FROM islands ORDER BY island_id ASC").fetchall()
         return [dict(r) for r in rows]
+
+    def spawn_or_replace_island(
+        self,
+        *,
+        name: str,
+        strategy_focus: str,
+        max_active: int = 6,
+        retire_island_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Spawn a new orthogonal Research Island, archiving the most-stagnant island if at `max_active` cap."""
+        palette = [
+            "#38bdf8", "#a78bfa", "#34d399", "#fbbf24",
+            "#f472b6", "#fb7185", "#2dd4bf", "#818cf8", "#f97316", "#22d3ee",
+        ]
+        cleaned_name = re.sub(r"[^a-zA-Z0-9_-]+", "-", (name or "new-frontier").strip().lower()).strip("-")[:28] or "new-frontier"
+        focus = (strategy_focus or "").strip()[:800]
+        retired_id: int | None = None
+
+        with self._lock, self._connect() as conn:
+            all_rows = [dict(r) for r in conn.execute("SELECT * FROM islands ORDER BY island_id ASC").fetchall()]
+            for r in all_rows:
+                if r["name"].lower() == cleaned_name and int(r.get("archived") or 0) == 0:
+                    return {"ok": True, "created": False, "island_id": int(r["island_id"]), "retired_island_id": None, "message": "Island already active"}
+
+            active_rows = [r for r in all_rows if int(r.get("archived") or 0) == 0]
+            best_nid = self.get_meta("best_node_id")
+            if retire_island_id is not None and any(int(r["island_id"]) == int(retire_island_id) for r in active_rows) and len(active_rows) > 1:
+                retired_id = int(retire_island_id)
+            elif len(active_rows) >= max(2, int(max_active)):
+                # Pick most stagnant active island (avoid retiring the island holding global best if possible)
+                candidates = [r for r in active_rows if r.get("best_node_id") != best_nid] or active_rows
+                stagnant = max(
+                    candidates,
+                    key=lambda r: (int(r.get("consecutive_obstructions") or 0), -float(r.get("best_speedup") or 1.0)),
+                )
+                retired_id = int(stagnant["island_id"])
+
+            if retired_id is not None:
+                conn.execute("UPDATE islands SET archived=1 WHERE island_id=?", (retired_id,))
+
+            new_id = (max((int(r["island_id"]) for r in all_rows), default=-1) + 1)
+            best_sc = self.get_meta("best_score")
+            best_sp = float(self.get_meta("best_speedup") or 1.0)
+            conn.execute(
+                """
+                INSERT INTO islands(
+                    island_id, name, strategy_focus, color, angle_start_deg, angle_end_deg,
+                    best_score, best_speedup, best_node_id, eval_count, breakthrough_count,
+                    consecutive_obstructions, archived
+                ) VALUES(?, ?, ?, ?, 0.0, 60.0, ?, ?, ?, 0, 0, 0, 0)
+                """,
+                (new_id, cleaned_name, focus, palette[new_id % len(palette)], best_sc, best_sp, best_nid),
+            )
+
+            # Rebalance angular sectors cleanly across all islands so Radial Observatory wedges never overlap!
+            total_isl = conn.execute("SELECT island_id FROM islands ORDER BY island_id ASC").fetchall()
+            n_tot = max(1, len(total_isl))
+            wedge = 360.0 / n_tot
+            for idx, r in enumerate(total_isl):
+                conn.execute(
+                    "UPDATE islands SET angle_start_deg=?, angle_end_deg=? WHERE island_id=?",
+                    (round(idx * wedge, 2), round((idx + 1) * wedge, 2), int(r["island_id"])),
+                )
+
+        ret_note = f" (retired stagnant island #{retired_id})" if retired_id is not None else ""
+        self.post_bulletin("STRATEGY", f"[NEW ISLAND #{new_id}: {cleaned_name}]{ret_note} Focus: {focus[:300]}")
+        self.add_diary(
+            "STRATEGY",
+            f"New Research Island #{new_id}: {cleaned_name}{ret_note}",
+            f"Focus: {focus}\nRetired Stale Island: {retired_id}",
+            island_id=new_id,
+        )
+        return {"ok": True, "created": True, "island_id": new_id, "name": cleaned_name, "retired_island_id": retired_id}
 
     def new_node_id(self, prefix: str = "n") -> str:
         with self._lock, self._connect() as conn:
@@ -702,14 +787,20 @@ class SwarmDB:
                         """
                         UPDATE islands SET
                             best_score=?, best_speedup=?, best_node_id=?,
-                            breakthrough_count = breakthrough_count + 1
+                            breakthrough_count = breakthrough_count + 1,
+                            consecutive_obstructions = 0
                         WHERE island_id=?
                         """,
                         (score, speedup, node_id, island_id),
                     )
                 elif is_breakthrough:
                     conn.execute(
-                        "UPDATE islands SET breakthrough_count = breakthrough_count + 1 WHERE island_id=?",
+                        "UPDATE islands SET breakthrough_count = breakthrough_count + 1, consecutive_obstructions = 0 WHERE island_id=?",
+                        (island_id,),
+                    )
+                elif finalize and valid:
+                    conn.execute(
+                        "UPDATE islands SET consecutive_obstructions = COALESCE(consecutive_obstructions, 0) + 1 WHERE island_id=?",
                         (island_id,),
                     )
 
@@ -871,7 +962,9 @@ class SwarmDB:
                 "SELECT role, status, COUNT(*) AS c FROM nodes GROUP BY role, status"
             ).fetchall()
             isl_rows = conn.execute(
-                "SELECT island_id, name, best_score, best_speedup, eval_count, breakthrough_count FROM islands ORDER BY island_id ASC"
+                "SELECT island_id, name, best_score, best_speedup, eval_count, breakthrough_count, "
+                "COALESCE(consecutive_obstructions, 0) AS consecutive_obstructions, COALESCE(archived, 0) AS archived "
+                "FROM islands ORDER BY island_id ASC"
             ).fetchall()
             recent_wins = conn.execute(
                 "SELECT node_id, role, island_id, score, speedup, title, code_summary FROM nodes "
