@@ -111,16 +111,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     0%, 100% { transform: scale(1); opacity: 1; }
     50% { transform: scale(1.4); opacity: 0.55; }
   }
-  .title-main { font-size: 14px; font-weight: 700; letter-spacing: -0.015em; white-space: nowrap; }
-  .subtitle { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 310px; }
+  .title-main { font-size: 13.5px; font-weight: 700; letter-spacing: -0.015em; white-space: nowrap; }
+  .subtitle { font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 215px; }
 
   .kpis {
-    display: flex; align-items: center; gap: 1px;
-    flex: 1 1 auto; min-width: 0; justify-content: flex-end;
+    display: flex; align-items: center; gap: 0px;
+    margin-left: auto; min-width: 0; justify-content: flex-start;
     overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
   }
   @media (max-width: 1180px) {
-    .kpis { justify-content: flex-start; }
+    .kpis { margin-left: 0; width: 100%; }
     header { flex-wrap: wrap; padding: 8px 12px; gap: 6px; }
     .brand { width: 100%; }
     .subtitle { max-width: 68vw; }
@@ -129,8 +129,8 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .kpis::-webkit-scrollbar { display: none; }
   .kpi {
     display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0;
-    min-height: 42px; justify-content: center;
-    padding: 3px 7px; border-right: 1px solid var(--border);
+    min-height: 40px; justify-content: center;
+    padding: 3px 6px; border-right: 1px solid var(--border);
     border-radius: 8px; cursor: help;
     transition: background-color 0.14s ease, transform 0.14s ease;
   }
@@ -300,18 +300,16 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 
   /* Mobile / iPad Bottom Quick-Inspect Sheet (keeps Graph visible on tap!) */
   .mobile-sheet {
-    position: absolute; left: 12px; right: 12px; bottom: 54px; z-index: 22;
+    display: none;
+    position: absolute; left: 12px; right: 64px; bottom: 54px; z-index: 25;
     padding: 13px 14px; border-radius: 14px;
-    background: var(--panel-elev);
-    border: 1px solid rgba(56, 189, 248, 0.38);
+    background: #0d1526;
+    border: 1px solid rgba(56, 189, 248, 0.45);
     box-shadow: var(--shadow-float);
-    backdrop-filter: blur(18px);
-    transform: translateY(16px); opacity: 0; pointer-events: none;
-    transition: opacity 0.18s ease, transform 0.18s ease;
   }
-  .mobile-sheet.open { transform: translateY(0); opacity: 1; pointer-events: auto; }
+  .mobile-sheet.open { display: block; }
   @media (min-width: 1181px) {
-    .mobile-sheet { display: none; }
+    .mobile-sheet, .mobile-sheet.open { display: none; }
   }
 
   /* Inspector Drawer */
