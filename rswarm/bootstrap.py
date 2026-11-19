@@ -80,6 +80,10 @@ exec {rswarm_bin} agent submit --workspace "{ws}" "$@"
 set -euo pipefail
 exec {rswarm_bin} agent hosted-submit --workspace "{ws}" "$@"
 """,
+        "swarm-directive": f"""#!/usr/bin/env bash
+set -euo pipefail
+exec {rswarm_bin} agent directive --workspace "{ws}" "$@"
+""",
     }
     for name, body in wrappers.items():
         p = bin_dir / name

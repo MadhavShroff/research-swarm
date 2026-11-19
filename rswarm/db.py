@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .models import compute_speedup_and_progress, is_better_score
+from .models import compute_speedup_and_progress, is_better_score, is_rate_limit_or_transient_text
 
 _STOPWORDS = {
     "the", "and", "for", "with", "that", "this", "from", "into", "using", "use",
@@ -90,6 +90,9 @@ class SwarmDB:
                     status TEXT NOT NULL,
                     depth INTEGER DEFAULT 0,
                     debug_depth INTEGER DEFAULT 0,
+                    deepen_depth INTEGER DEFAULT 0,
+                    seed_score REAL,
+                    target_slice TEXT DEFAULT '',
                     title TEXT NOT NULL,
                     hypothesis TEXT DEFAULT '',
                     rationale TEXT DEFAULT '',
@@ -176,6 +179,12 @@ class SwarmDB:
                 conn.execute("ALTER TABLE nodes ADD COLUMN effort_used TEXT DEFAULT ''")
             if "timeout_retries" not in cols:
                 conn.execute("ALTER TABLE nodes ADD COLUMN timeout_retries INTEGER DEFAULT 0")
+            if "deepen_depth" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN deepen_depth INTEGER DEFAULT 0")
+            if "seed_score" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN seed_score REAL")
+            if "target_slice" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN target_slice TEXT DEFAULT ''")
             existing_runs = conn.execute("SELECT COUNT(*) AS c FROM eval_runs").fetchone()["c"]
             if int(existing_runs) == 0:
                 conn.execute(
@@ -334,6 +343,9 @@ class SwarmDB:
         status: str = "QUEUED",
         candidate_path: str = "",
         debug_depth: int = 0,
+        deepen_depth: int = 0,
+        seed_score: float | None = None,
+        target_slice: str = "",
         novelty_threshold: float | None = None,
     ) -> tuple[str, bool, str]:
         """Insert a research tree node; runs novelty gate if novelty_threshold is provided."""
@@ -353,12 +365,14 @@ class SwarmDB:
                             """
                             INSERT INTO nodes(
                                 node_id, parent_id, secondary_parent_id, island_id, role, status,
-                                depth, debug_depth, title, hypothesis, rationale, diagnostics, created_at, finished_at
-                            ) VALUES(?, ?, ?, ?, ?, 'REJECTED_NOVELTY', ?, ?, ?, ?, ?, ?, ?, ?)
+                                depth, debug_depth, deepen_depth, seed_score, target_slice,
+                                title, hypothesis, rationale, diagnostics, created_at, finished_at
+                            ) VALUES(?, ?, ?, ?, ?, 'REJECTED_NOVELTY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 nid, parent_id, secondary_parent_id, island_id, role,
-                                depth, debug_depth, title[:200], hypothesis[:4000], rationale[:4000],
+                                depth, debug_depth, deepen_depth, seed_score, target_slice[:240],
+                                title[:200], hypothesis[:4000], rationale[:4000],
                                 f"Rejected by novelty gate (similarity={sim} with {dup_id})",
                                 time.time(), time.time(),
                             ),
@@ -378,12 +392,14 @@ class SwarmDB:
                     """
                     INSERT INTO nodes(
                         node_id, parent_id, secondary_parent_id, island_id, role, status,
-                        depth, debug_depth, title, hypothesis, rationale, candidate_path, created_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        depth, debug_depth, deepen_depth, seed_score, target_slice,
+                        title, hypothesis, rationale, candidate_path, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         nid, parent_id, secondary_parent_id, island_id, role, status,
-                        depth, debug_depth, title[:200], hypothesis[:4000], rationale[:4000],
+                        depth, debug_depth, deepen_depth, seed_score, target_slice[:240],
+                        title[:200], hypothesis[:4000], rationale[:4000],
                         candidate_path, time.time(),
                     ),
                 )
@@ -402,6 +418,39 @@ class SwarmDB:
             )
             return int(cur.rowcount or 0)
 
+    def recover_rate_limited_nodes(self, logs_dir: Path | None = None) -> int:
+        """Resurrect any FAILED nodes whose failure came from transient API rate-limits or overload."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT node_id, eval_ms, diagnostics, code_summary FROM nodes WHERE status='FAILED'"
+            ).fetchall()
+            to_rescue: list[str] = []
+            for r in rows:
+                # Never overwrite a node that actually ran local_eval.sh and failed validation (DEBUG handles that).
+                if float(r["eval_ms"] or 0.0) > 0.0:
+                    continue
+                nid = str(r["node_id"])
+                combined = f"{r['diagnostics'] or ''}\n{r['code_summary'] or ''}"
+                if not is_rate_limit_or_transient_text(combined) and logs_dir is not None:
+                    lp = logs_dir / f"{nid}.log"
+                    if lp.is_file():
+                        try:
+                            combined = lp.read_text(errors="replace")[-3000:]
+                        except OSError:
+                            combined = ""
+                if is_rate_limit_or_transient_text(combined):
+                    to_rescue.append(nid)
+            if not to_rescue:
+                return 0
+            placeholders = ",".join("?" for _ in to_rescue)
+            conn.execute(
+                f"UPDATE nodes SET status='QUEUED', tmux_window='', finished_at=NULL, "
+                f"diagnostics='Auto-recovered from transient API rate limit; preserving session & workdir.' "
+                f"WHERE node_id IN ({placeholders})",
+                to_rescue,
+            )
+            return len(to_rescue)
+
     def claim_next_queued_node(
         self,
         preferred_island: int | None = None,
@@ -409,19 +458,21 @@ class SwarmDB:
     ) -> dict[str, Any] | None:
         """Atomically transition the highest-priority QUEUED node to RUNNING."""
         role_priority = {
-            "DEBUG": 0,
-            "CROSSOVER": 1,
-            "DEEPEN": 2,
-            "EXPLORE": 3,
-            "IMPLEMENT": 4,
+            "META": 0,
+            "DEBUG": 1,
+            "IMPLEMENT": 2,
+            "DEEPEN": 3,
+            "EXPLORE": 4,
+            "CROSSOVER": 5,
         }
         role_case_sql = (
             "CASE role "
-            "WHEN 'DEBUG' THEN 0 "
-            "WHEN 'CROSSOVER' THEN 1 "
-            "WHEN 'DEEPEN' THEN 2 "
-            "WHEN 'EXPLORE' THEN 3 "
-            "ELSE 4 END"
+            "WHEN 'META' THEN 0 "
+            "WHEN 'DEBUG' THEN 1 "
+            "WHEN 'IMPLEMENT' THEN 2 "
+            "WHEN 'DEEPEN' THEN 3 "
+            "WHEN 'EXPLORE' THEN 4 "
+            "ELSE 5 END"
         )
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -471,6 +522,8 @@ class SwarmDB:
         code_summary: str | None = None,
         candidate_path: str | None = None,
         timeout_retries: int | None = None,
+        seed_score: float | None = None,
+        target_slice: str | None = None,
         finished: bool = False,
     ) -> None:
         sets: list[str] = []
@@ -502,6 +555,12 @@ class SwarmDB:
         if timeout_retries is not None:
             sets.append("timeout_retries=?")
             vals.append(int(timeout_retries))
+        if seed_score is not None:
+            sets.append("seed_score=?")
+            vals.append(float(seed_score))
+        if target_slice is not None:
+            sets.append("target_slice=?")
+            vals.append(target_slice[:240])
         if finished:
             sets.append("finished_at=?")
             vals.append(time.time())
@@ -539,6 +598,11 @@ class SwarmDB:
             island_id = int(node["island_id"])
             parent = self.get_node(node["parent_id"]) if node.get("parent_id") else None
             parent_score = parent["score"] if (parent and parent.get("valid") and parent.get("score") is not None) else baseline
+            seed_score = node.get("seed_score")
+            effective_ref = parent_score
+            if seed_score is not None:
+                if effective_ref is None or is_better_score(float(seed_score), float(effective_ref), direction):
+                    effective_ref = float(seed_score)
 
             speedup, progress = (
                 compute_speedup_and_progress(score, baseline, target, direction)
@@ -547,22 +611,13 @@ class SwarmDB:
             )
 
             beat_parent = bool(
-                valid and score is not None and parent_score is not None and is_better_score(score, float(parent_score), direction)
+                valid and score is not None and effective_ref is not None and is_better_score(score, float(effective_ref), direction)
             )
 
             with self._connect() as conn:
                 isl = conn.execute("SELECT * FROM islands WHERE island_id=?", (island_id,)).fetchone()
                 isl_best = isl["best_score"] if isl else None
                 isl_best_nid = isl["best_node_id"] if isl else None
-                beat_island = bool(
-                    valid
-                    and score is not None
-                    and (
-                        isl_best is None
-                        or is_better_score(score, float(isl_best), direction)
-                        or (isl_best_nid == node_id and abs(score - float(isl_best)) <= 1e-12)
-                    )
-                )
                 beat_global = bool(
                     valid
                     and score is not None
@@ -570,6 +625,23 @@ class SwarmDB:
                         global_best is None
                         or is_better_score(score, float(global_best), direction)
                         or (global_best_nid == node_id and abs(score - float(global_best)) <= 1e-12)
+                    )
+                )
+                # Require beating starting seed_score (when present) so unchanged pool copies never masquerade as island breakthroughs!
+                seed_ok = (
+                    seed_score is None
+                    or beat_parent
+                    or beat_global
+                    or (isl_best_nid == node_id and isl_best is not None and abs(score - float(isl_best)) <= 1e-12)
+                )
+                beat_island = bool(
+                    valid
+                    and score is not None
+                    and seed_ok
+                    and (
+                        isl_best is None
+                        or is_better_score(score, float(isl_best), direction)
+                        or (isl_best_nid == node_id and abs(score - float(isl_best)) <= 1e-12)
                     )
                 )
 
@@ -658,11 +730,18 @@ class SwarmDB:
                     prow = conn.execute("SELECT parent_id FROM nodes WHERE node_id=?", (cur_id,)).fetchone()
                     cur_id = prow["parent_id"] if prow else None
 
+            if valid and metrics:
+                self._update_gap_slices_from_metrics(metrics)
+
             if beat_global and score is not None:
                 self.set_meta("best_score", score)
                 self.set_meta("best_node_id", node_id)
                 self.set_meta("best_speedup", speedup)
                 self.set_meta("best_goal_progress", progress)
+                self.set_meta("evals_since_global_best", 0)
+            elif finalize:
+                cur_stall = int(self.get_meta("evals_since_global_best") or 0)
+                self.set_meta("evals_since_global_best", cur_stall + 1)
 
             gap_to_target = None
             if valid and score is not None and target is not None:
@@ -724,6 +803,93 @@ class SwarmDB:
                 "SELECT * FROM bulletin ORDER BY post_id DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def _update_gap_slices_from_metrics(self, metrics: dict[str, Any]) -> None:
+        """Automatically extract ranked subproblem gap slices from evaluator metrics JSON."""
+        slices: list[dict[str, Any]] = []
+        for group_key in ("reducible_by_regime", "reducible_by_band", "subproblem_gaps", "gaps_by_slice", "regime_gaps"):
+            sub = metrics.get(group_key)
+            if isinstance(sub, dict):
+                for k, v in sub.items():
+                    try:
+                        fv = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if fv > 1e-6:
+                        slices.append({"slice": f"{group_key}:{k}", "label": str(k), "group": group_key, "gap": round(fv, 4)})
+        if slices:
+            slices.sort(key=lambda x: float(x["gap"]), reverse=True)
+            self.set_meta("gap_slices", slices[:20])
+
+    def get_gap_slices(self) -> list[dict[str, Any]]:
+        val = self.get_meta("gap_slices", [])
+        return val if isinstance(val, list) else []
+
+    def recent_obstructions(self, island_id: int | None = None, limit: int = 8) -> list[dict[str, Any]]:
+        """Return recent OBSTRUCTED runs so agents never repeat exhausted dead-end mechanisms."""
+        with self._lock, self._connect() as conn:
+            if island_id is not None:
+                rows = conn.execute(
+                    "SELECT node_id, role, title, code_summary, score FROM nodes "
+                    "WHERE status='OBSTRUCTED' AND island_id=? ORDER BY finished_at DESC LIMIT ?",
+                    (island_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT node_id, role, title, code_summary, score FROM nodes "
+                    "WHERE status='OBSTRUCTED' ORDER BY finished_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_strategy_directive(self, directive: str, node_id: str | None = None) -> list[str]:
+        """Pin a high-priority strategic directive injected into all worker prompts."""
+        cleaned = (directive or "").strip()
+        if not cleaned:
+            return self.get_strategy_directives()
+        cur = self.get_strategy_directives()
+        deduped = [d for d in cur if d.strip().lower() != cleaned.lower()]
+        updated = ([cleaned[:900]] + deduped)[:5]
+        self.set_meta("strategy_directives", updated)
+        self.post_bulletin("STRATEGY", f"[STRATEGY DIRECTIVE] {cleaned[:600]}", node_id=node_id)
+        self.add_diary(
+            "STRATEGY",
+            f"Strategic Directive ({node_id or 'coordinator'})",
+            cleaned,
+            node_id=node_id,
+        )
+        return updated
+
+    def get_strategy_directives(self) -> list[str]:
+        val = self.get_meta("strategy_directives", [])
+        return [str(x) for x in val] if isinstance(val, list) else []
+
+    def compile_meta_telemetry(self) -> dict[str, Any]:
+        """Build a quantitative self-audit report for the autonomous META Strategic Diagnostician."""
+        with self._lock, self._connect() as conn:
+            role_rows = conn.execute(
+                "SELECT role, status, COUNT(*) AS c FROM nodes GROUP BY role, status"
+            ).fetchall()
+            isl_rows = conn.execute(
+                "SELECT island_id, name, best_score, best_speedup, eval_count, breakthrough_count FROM islands ORDER BY island_id ASC"
+            ).fetchall()
+            recent_wins = conn.execute(
+                "SELECT node_id, role, island_id, score, speedup, title, code_summary FROM nodes "
+                "WHERE status='BREAKTHROUGH' ORDER BY finished_at DESC LIMIT 8"
+            ).fetchall()
+        role_matrix: dict[str, dict[str, int]] = {}
+        for r in role_rows:
+            role_matrix.setdefault(str(r["role"]), {})[str(r["status"])] = int(r["c"])
+        return {
+            "stats": self.get_summary_stats(),
+            "evals_since_global_best": int(self.get_meta("evals_since_global_best") or 0),
+            "role_matrix": role_matrix,
+            "islands": [dict(x) for x in isl_rows],
+            "gap_slices": self.get_gap_slices(),
+            "recent_wins": [dict(x) for x in recent_wins],
+            "recent_obstructions": self.recent_obstructions(limit=12),
+            "active_directives": self.get_strategy_directives(),
+        }
 
     def count_recent_hosted_submissions(self, window_sec: float = 86400.0) -> int:
         cutoff = time.time() - window_sec

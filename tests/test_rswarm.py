@@ -10,12 +10,15 @@ import urllib.request
 from pathlib import Path
 
 from rswarm.bootstrap import bootstrap_workspace
+from rswarm.coordinator import SwarmCoordinator
 from rswarm.dashboard import DashboardServer
 from rswarm.db import SwarmDB
 from rswarm.governor import ResourceGovernor
+from rswarm.harnesses import HarnessResult
 from rswarm.models import (
     SwarmConfig,
     compute_speedup_and_progress,
+    is_rate_limit_or_transient_text,
     make_tmux_window_name,
     validate_harness_choice,
     validate_model_choice,
@@ -472,11 +475,11 @@ PY
                     claimed1 = db.claim_next_queued_node(preferred_island=0, exclude_roles=("EXPLORE",))
                     self.assertEqual(claimed1["node_id"], nid)
 
-                    # Run 1: survives initial 429, writes step1_state.txt, hits 3s timeout, saves checkpoint & re-queues!
+                    # Run 1: survives initial 429, writes step1_state.txt, hits 429 at window end, saves checkpoint & re-queues WITHOUT burning timeout_retries!
                     await coord._run_node_worker(claimed1, "claude-mux-lite")
                     after1 = db.get_node(nid)
                     self.assertEqual(after1["status"], "QUEUED")
-                    self.assertEqual(after1["timeout_retries"], 1)
+                    self.assertEqual(after1["timeout_retries"], 0)
                     self.assertTrue((ws / "work" / nid / "step1_state.txt").is_file())
                     self.assertTrue((ws / "work" / nid / ".rswarm_checkpoint.json").is_file())
 
@@ -551,14 +554,17 @@ PY
             self.assertTrue((ws / "eval" / "merge_pool.sh").is_file())
             self.assertTrue((ws / "vault" / "solvers").is_dir())
 
-            # 1. Verify DEEPEN and CROSSOVER strictly preempt queued IMPLEMENT!
+            # 1. Verify META & IMPLEMENT take primary throughput while reserved slots serve DEEPEN/CROSSOVER!
             imp_id, _, _ = db.create_node(island_id=0, role="IMPLEMENT", title="Imp", parent_id=boot["baseline_node_id"], novelty_threshold=None)
             deep_id, _, _ = db.create_node(island_id=0, role="DEEPEN", title="Deep", parent_id=boot["baseline_node_id"], novelty_threshold=None)
             cross_id, _, _ = db.create_node(island_id=0, role="CROSSOVER", title="Cross", parent_id=boot["baseline_node_id"], novelty_threshold=None)
+            meta_id, _, _ = db.create_node(island_id=0, role="META", title="Meta", parent_id=boot["baseline_node_id"], novelty_threshold=None)
 
+            c_meta = db.claim_next_queued_node(preferred_island=0, exclude_roles=("EXPLORE",))
             c_first = db.claim_next_queued_node(preferred_island=0, exclude_roles=("EXPLORE",))
-            c_second = db.claim_next_queued_node(preferred_island=0, exclude_roles=("EXPLORE",))
-            self.assertEqual(c_first["node_id"], cross_id)
+            c_second = db.claim_next_queued_node(preferred_island=0, exclude_roles=("EXPLORE", "IMPLEMENT"))
+            self.assertEqual(c_meta["node_id"], meta_id)
+            self.assertEqual(c_first["node_id"], imp_id)
             self.assertEqual(c_second["node_id"], deep_id)
 
             # 2. Verify disjoint sub-instance wins ("a"=6 on imp_id, "b"=5 on deep_id) combine to score 11.0!
@@ -572,6 +578,127 @@ PY
             f2.write_text('{"a": 10.0, "b": 5.0}\n')
             await svc.handle_submit({"node_id": deep_id, "candidate_path": str(f2), "summary": "improved b"})
             self.assertAlmostEqual(float(db.get_meta("best_score")), 11.0, places=4)
+
+    async def test_rate_limit_never_abandoned_and_resurrects_failed_nodes(self) -> None:
+        msg = (
+            "API Error: Server is temporarily limiting requests (not your usage limit) · "
+            "This request would exceed your account's rate limit. Please try again later."
+        )
+        self.assertTrue(is_rate_limit_or_transient_text(msg))
+        self.assertFalse(is_rate_limit_or_transient_text("SyntaxError: invalid decimal literal"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ws = tmp_path / "ws-rl"
+            local_ev = tmp_path / "local_eval.sh"
+            local_ev.write_text('#!/usr/bin/env bash\necho \'{"valid": true, "score": 10.0, "eval_ms": 1.0, "diagnostics": "ok", "metrics": {}}\'\n')
+            local_ev.chmod(0o755)
+            hosted_ev = tmp_path / "hosted_submit.sh"
+            hosted_ev.write_text('#!/usr/bin/env bash\necho \'{"submitted": false}\'\n')
+            hosted_ev.chmod(0o755)
+            base_c = tmp_path / "cand.json"
+            base_c.write_text("{}\n")
+
+            cfg = SwarmConfig(name="ws-rl", workspace_dir=str(ws), brief="Test RL.", direction="minimize")
+            db = SwarmDB(ws / "state" / "swarm.db")
+            rbin = Path(__file__).resolve().parent.parent / "bin" / "rswarm"
+            boot = await bootstrap_workspace(
+                cfg, db, rbin,
+                local_eval_src=str(local_ev),
+                hosted_eval_src=str(hosted_ev),
+                baseline_src=str(base_c),
+            )
+
+            # 1. Historical FAILED node with rate-limit log/summary is resurrected to QUEUED; invalid-eval FAILED stays FAILED!
+            rl_nid, _, _ = db.create_node(island_id=0, role="EXPLORE", title="RL victim", parent_id=boot["baseline_node_id"], status="FAILED", novelty_threshold=None)
+            db.update_node_runtime(rl_nid, code_summary=msg, finished=True)
+            bad_nid, _, _ = db.create_node(island_id=0, role="IMPLEMENT", title="Broken code", parent_id=boot["baseline_node_id"], novelty_threshold=None)
+            db.record_evaluation(bad_nid, valid=False, score=None, eval_ms=12.0, diagnostics="SyntaxError", finalize=True)
+
+            rescued = db.recover_rate_limited_nodes(ws / "logs")
+            self.assertEqual(rescued, 1)
+            self.assertEqual(db.get_node(rl_nid)["status"], "QUEUED")
+            self.assertEqual(db.get_node(bad_nid)["status"], "FAILED")
+
+            # 2. Live worker hitting rate_limited=True is re-queued WITHOUT burning timeout_retries or failing!
+            coord = SwarmCoordinator(cfg, db)
+            db.update_node_runtime(rl_nid, status="RUNNING")
+            claimed = db.get_node(rl_nid)
+
+            async def _fake_rl_run(**kwargs):
+                return HarnessResult(
+                    exit_code=75,
+                    elapsed_sec=3.0,
+                    timed_out=False,
+                    harness_used="claude-mux",
+                    model_used=cfg.researcher_model,
+                    tmux_window="R-test",
+                    final_text=msg,
+                    log_path=str(ws / "logs" / f"{rl_nid}.log"),
+                    rate_limited=True,
+                )
+
+            coord.runner.run_agent = _fake_rl_run  # type: ignore[method-assign]
+            await coord._run_node_worker(claimed, "claude-mux")
+            after = db.get_node(rl_nid)
+            self.assertEqual(after["status"], "QUEUED")
+            self.assertEqual(int(after["timeout_retries"] or 0), 0)
+            self.assertGreater(coord._model_cooldown_until.get(cfg.researcher_model, 0.0), 0.0)
+
+    async def test_seed_relative_breakthrough_gate_and_meta_directives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ws = tmp_path / "ws-seed"
+            local_ev = tmp_path / "local_eval.sh"
+            local_ev.write_text(
+                '#!/usr/bin/env bash\n'
+                'SCORE="$(cat "$1")"\n'
+                'printf \'{"valid": true, "score": %s, "eval_ms": 1.0, "diagnostics": "ok", "metrics": {"reducible_by_regime": {"upper_shell": 7.0, "mid_shell": 13.7}}}\\n\' "$SCORE"\n'
+            )
+            local_ev.chmod(0o755)
+            hosted_ev = tmp_path / "hosted_submit.sh"
+            hosted_ev.write_text('#!/usr/bin/env bash\necho \'{"submitted": false}\'\n')
+            hosted_ev.chmod(0o755)
+            base_c = tmp_path / "cand.txt"
+            base_c.write_text("28.9377\n")
+
+            cfg = SwarmConfig(name="ws-seed", workspace_dir=str(ws), brief="Minimize.", direction="minimize", leaderboard_target=22.04)
+            db = SwarmDB(ws / "state" / "swarm.db")
+            rbin = Path(__file__).resolve().parent.parent / "bin" / "rswarm"
+            boot = await bootstrap_workspace(
+                cfg, db, rbin,
+                local_eval_src=str(local_ev),
+                hosted_eval_src=str(hosted_ev),
+                baseline_src=str(base_c),
+            )
+            svc = EvalAndTreeService(cfg, db)
+
+            # Parent scored 22.986, while pool best_score advanced to 22.754.
+            p_id, _, _ = db.create_node(island_id=1, role="IMPLEMENT", title="Parent 22.986", parent_id=boot["baseline_node_id"], novelty_threshold=None)
+            db.record_evaluation(p_id, valid=True, score=22.986, eval_ms=1.0, diagnostics="ok", finalize=True)
+            db.set_meta("best_score", 22.754)
+
+            # Child seeded from pool (seed_score=22.754) submitting 22.754 (zero delta!) MUST be OBSTRUCTED, NOT BREAKTHROUGH!
+            z_id, _, _ = db.create_node(island_id=2, role="DEEPEN", title="Zero delta pool copy", parent_id=p_id, seed_score=22.754, novelty_threshold=None)
+            cz = tmp_path / "cz.txt"
+            cz.write_text("22.754\n")
+            rz = await svc.handle_submit({"node_id": z_id, "candidate_path": str(cz), "summary": "No new packing"})
+            self.assertFalse(rz["is_breakthrough"])
+            self.assertEqual(db.get_node(z_id)["status"], "OBSTRUCTED")
+
+            # Child seeded at 22.754 that strictly improves to 22.610 IS a real BREAKTHROUGH and populates gap_slices!
+            w_id, _, _ = db.create_node(island_id=2, role="IMPLEMENT", title="Gobel upper shell", parent_id=p_id, seed_score=22.754, novelty_threshold=None)
+            cw = tmp_path / "cw.txt"
+            cw.write_text("22.610\n")
+            rw = await svc.handle_submit({"node_id": w_id, "candidate_path": str(cw), "summary": "Gobel strip gain"})
+            self.assertTrue(rw["is_breakthrough"])
+            self.assertEqual(db.get_node(w_id)["status"], "BREAKTHROUGH")
+            self.assertGreaterEqual(len(db.get_gap_slices()), 2)
+
+            # Verify strategy directive RPC & prompt injection!
+            d_res = await svc.handle_directive({"node_id": w_id, "directive": "Focus on k^2+k+1..k^2+2k Gobel strips."})
+            self.assertTrue(d_res["ok"])
+            self.assertIn("Gobel strips", db.get_strategy_directives()[0])
 
 
 if __name__ == "__main__":
