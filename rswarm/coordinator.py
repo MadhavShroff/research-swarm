@@ -262,8 +262,9 @@ class SwarmCoordinator:
         digest = (
             "## Zero-Recon Workspace Map (`./shared/WORKSPACE_INDEX.md`)\n"
             "- **DO NOT waste turns running `ls`, `find`, or baseline `swarm-eval` on your unmodified starting `./candidate/`!** Everything is indexed right here:\n"
-            "- **Literature & Internet Search CLI**:\n"
-            "  - `swarm-search \"<query>\" [--source all|papers|mathoverflow|github|wiki]` -> searches OpenAlex (178k+ papers), Semantic Scholar, Crossref, MathOverflow, GitHub, and Wikipedia in `<1.5s`.\n"
+            "- **Prior-Art Boundary Mapping (`swarm-search` / `swarm-fetch`)**:\n"
+            "  - Online/published methods CANNOT advance the frontier—use search strictly to map where prior art stops and which hidden assumption traps it!\n"
+            "  - `swarm-search \"<query>\" [--source all|papers|mathoverflow|github|wiki]` -> searches OpenAlex, Semantic Scholar, Crossref, MathOverflow, GitHub, and Wikipedia in `<1.5s`.\n"
             "  - `swarm-fetch \"<arxiv_id_or_pdf_or_url>\" --save-slug \"<slug>\"` -> extracts full PDF (`pdftotext`), arXiv `.tex`, or HTML into `./shared/literature/<slug>.md`.\n"
             + (f"  - Cached Papers Ready in `./shared/literature/`: `{', '.join(lit_files)}`\n" if lit_files else "")
             + "- **Instant `<15ms` Sparse Patch Verifier & Merger**:\n"
@@ -322,14 +323,16 @@ class SwarmCoordinator:
         engine_root = Path(__file__).resolve().parent.parent
         system_prompt = (
             f"You are an autonomous {role} agent in the `{self.cfg.name}` research swarm.\n"
-            f"Mission: Solve the challenge and FAR EXCEED leaderboard #1 "
+            f"Mission: Advance the mathematical and algorithmic frontier FAR BEYOND leaderboard #1 "
             f"(direction={self.cfg.direction}, baseline={stats['baseline_score']}, "
             f"current_global_best={stats['best_score']} [{stats['best_speedup']:.4f}x], "
             f"target_to_beat={stats['leaderboard_target']}).\n"
+            "FRONTIER NOVELTY AXIOM: Online, textbook, and published methods CANNOT evolve the frontier—every known public method "
+            "is already absorbed into the competitive floor. Treat literature (`swarm-search` / `./shared/literature/`) strictly as a "
+            "boundary map of where known methods fail, break their hidden assumptions, and invent genuinely novel insights and algorithms.\n"
             f"Your Node ID is `{node['node_id']}` on Research Island #{island['island_id']} (`{island['name']}`).\n"
             "CLI skills on your PATH: `swarm-search`, `swarm-fetch`, `swarm-check`, `swarm-eval`, `swarm-propose`, `swarm-submit`, `swarm-directive`, `swarm-island`, `swarm-hosted-submit`.\n"
-            f"Never modify `eval/` (it is read-only) and do NOT read `{engine_root}` engine internals. "
-            "Focus 100% on rigorous mathematical & algorithmic breakthroughs."
+            f"Never modify `eval/` (it is read-only) and do NOT read `{engine_root}` engine internals."
         )
 
         lb1 = stats.get("leaderboard_number_one")
@@ -426,11 +429,10 @@ Focus: {island['strategy_focus']}
 {lb1_line}{solvers_hint}{gap_line}- Starting Candidate in your workdir: `{copied_cand if copied_cand else './candidate/'}`{seed_note}
 
 {ws_map_block}{dir_block}{slice_block}{ledger_block}{tabu_block}{offload_block}
-## IDEAL-BACKTRACKING DISCOVERY DOCTRINE (Work Backward From the Ideal!)
-Do NOT make blind single-element random tweaks from the baseline! Achieve large structural leaps by working backward from the theoretical Ideal:
-1. **Ideal Lower Bound & Literature Grounding**: State the mathematical Ideal, check `./shared/literature/` or run `swarm-search` / `swarm-fetch` for proven theorems/constructions, and target the highest marginal-weight **reducible gap**.
-2. **Obstruction Diagnosis**: Identify the exact geometric, combinatorial, or numerical obstruction blocking current `./solvers_vault/` elites from reaching the Ideal.
-3. **Universal Parametric Families + Fast `<15ms` Patch Loop**: Test small/targeted patches instantly via `swarm-check patch.json --apply`, scale winners across full regimes, then submit!
+## FRONTIER NOVELTY & IDEAL-BACKTRACKING DOCTRINE (Known Methods Are the Floor, Never the Frontier!)
+1. **Known & Online Methods Cannot Win**: Assume every published construction, public notebook, survey table, and textbook heuristic (generic SA, blind random jitter, unmodified catalog templates) is already exhausted by competitors. Re-implementing known methods only reproduces the public floor—it will NEVER advance the frontier.
+2. **Literature as an Assumption-Breaking Map**: Use `./shared/literature/` and `swarm-search` strictly to diagnose *why* known methods plateau (e.g., hidden symmetry assumptions, uniform-angle restrictions, decoupled local moves, or premature discretization)—and NEVER mistake an empirical "published best-known" table for a mathematical optimum unless a formal lower-bound proof guarantees `reducible_gap == 0`.
+3. **First-Principles Novel Leaps**: Work backward from the mathematical Ideal bound, break the limiting assumption of prior art, invent an original parameterization, invariant, relaxation, or coupled operator, and validate rapidly via `swarm-check patch.json --apply`.
 
 ## Live Breakthrough & Obstruction Bulletin (Learn from Sibling Streams!)
 {chr(10).join(bul_lines)}
@@ -440,122 +442,153 @@ Do NOT make blind single-element random tweaks from the baseline! Achieve large 
             telem = self.db.compile_meta_telemetry()
             active_isl_ids = [int(i["island_id"]) for i in self.db.get_islands()]
             task_prompt = f"""{common_context}
-## Your Assignment (`META` — Autonomous Chief Research Strategist, Literature Scout & Island Architect)
-You are triggered automatically by the swarm's self-audit loop to search academic literature, retire stagnant islands, spawn orthogonal paradigm islands, and dispatch sharded breakthroughs toward `{lb1 or stats['leaderboard_target']}`.
+## Your Assignment (`META` — Autonomous Frontier Paradigm Architect & Assumption Breaker)
+You are triggered by the swarm's self-audit loop to detect known-method convergence, break limiting mathematical assumptions, evolve genuinely new paradigm islands, and dispatch novel frontier leaps beyond `{lb1 or stats['leaderboard_target']}`.
 
 ### Live Quantitative Swarm Telemetry
 ```json
 {json.dumps(telem, indent=2)[:4200]}
 ```
 
-### Mandatory Actions (Execute in 2-3 Fast Tool Turns):
-1. **Literature & Web Search (`swarm-search` / `swarm-fetch`)**: Search academic papers, MathOverflow, and GitHub for exact constructions targeting our largest remaining gap slices (check `./shared/literature/INDEX.md` first so you build on already-cached papers, then run `swarm-search "<focused mathematical query>"` and `swarm-fetch "<pdf_or_arxiv_url>" --save-slug "<slug>"` for any high-value paper!).
-2. **Dynamic Island Evolution (`swarm-island`)**: Inspect `islands` in the telemetry above. If ANY active island has `consecutive_obstructions >= 12` OR your literature search uncovers a genuinely orthogonal paradigm not represented by active islands `{active_isl_ids}`, spawn a new paradigm island (automatically archiving the most-stagnant island if at cap):
+### Core Objectives:
+1. **Audit Prior-Art & Swarm Convergence**: Inspect `recent_wins`, `recent_obstructions`, `./shared/literature/`, and (if needed) `swarm-search` / `swarm-fetch` to identify where current `./solvers_vault/` solvers and published online methods hit a structural wall. Never declare an empirical public record "optimal" without a formal mathematical lower-bound proof!
+2. **Evolve Orthogonal Novel Islands (`swarm-island`)**: If any active island has `consecutive_obstructions >= 10` OR you identify an unexplored mathematical representation/insight absent from active islands `{active_isl_ids}`, spawn a new paradigm island centered on breaking a specific assumption of known methods:
    ```bash
-   swarm-island --name "<2-3-word-slug>" --focus "<precise mathematical paradigm, paper reference, and solver family>"
+   swarm-island --name "<2-3-word-slug>" --focus "<broken assumption of known methods + novel mathematical representation and algorithm>"
    ```
-3. **Pin Strategy Directive (`swarm-directive`)** & **Dispatch 3-4 Sharded `IMPLEMENT` Builders (`swarm-propose`)**:
+3. **Pin Frontier Directive (`swarm-directive`) & Propose 3-4 Novel Sharded Hypotheses (`swarm-propose`)** (order reasoning -> novel insight -> mechanism -> title):
    ```bash
-   swarm-directive --directive "<1-3 sentences citing exact literature constructions, target slices, and dead-end methods to stop repeating>"
+   swarm-directive --directive "<high-leverage strategic shift: which known-method traps to stop repeating and which novel mathematical mechanisms + gap slices to attack>"
    swarm-propose --island-id <active_island_id> --role IMPLEMENT \\
-     --target-slice "<specific regime/band slice>" \\
-     --title "<concise 4-8 word mathematical mechanism>" \\
-     --hypothesis "IDEAL BOUND: <bound>. LITERATURE/THEOREM: <paper/formula in ./shared/literature/>. OBSTRUCTION: <exact bottleneck>. MECHANISM: <concrete C++/CUDA/Python algorithm>." \\
-     --rationale "<quantified expected score drop on this slice>"
+     --rationale "<first-principles analysis of why online/known methods and current vault solvers plateau on this slice>" \\
+     --novel-insight "<the hidden assumption broken + genuinely new mathematical insight, invariant, or operator invented>" \\
+     --hypothesis "<concrete falsifiable mathematical formulation and C++/CUDA/Python algorithm to build>" \\
+     --target-slice "<specific unsolved regime or scale band>" \\
+     --title "<concise 4-8 word novel mechanism title>"
    ```
-4. Stop immediately once `swarm-directive` and `swarm-propose` succeed.
 """
         elif role == "EXPLORE":
             task_prompt = f"""{common_context}
-## Your Assignment (`EXPLORE` — Literature-Grounded Ideal-Backtracking Researcher)
-CRITICAL EFFICIENCY RULE: All workspace structure, Gap Ledger, and Tabu Obstructions are already above—do NOT run `ls` or `cat` on workspace boilerplate!
-1. **Search Papers & Proofs First (`swarm-search` / `swarm-fetch`)**: Run 1 focused `swarm-search "<mathematical construction query>"` (and `swarm-fetch` if a paper has an open PDF/arXiv link not yet in `./shared/literature/`) to ground your ideas in real mathematical literature rather than guessing!
-2. Work backward from the Ideal bound toward Leaderboard #1 (`{lb1 or stats['leaderboard_target']}`): invent **2 to 3 distinct, literature-backed hypotheses** aligned with Island `{island['name']}` that target high-yield slices and avoid every item in the Tabu list.
-3. Invoke `swarm-propose` 2 or 3 times back-to-back (including `--target-slice` and citing any `./shared/literature/` paper):
+## Your Assignment (`EXPLORE` — First-Principles Frontier Theorist & Novel-Leap Creator)
+Workspace index, Gap Ledger, and Tabu Obstructions are already above—do not spend turns running `ls` on workspace boilerplate.
+Your sole mission is to **invent genuinely novel mathematical and algorithmic leaps** that advance the frontier beyond online/published methods and our current global best (`{stats['best_score']}`).
+
+1. **Map & Break Known-Method Assumptions**: Optionally run a targeted `swarm-search` (or check `./shared/literature/`) ONLY to verify what known constructions already do and pinpoint the exact hidden assumption (e.g., uniform pitch/angle, rigid strip decomposition, uncoupled local perturbation, or suboptimal relaxation) that causes known methods to stall.
+2. **Derive 2 to 3 Original Insights from First Principles**: Work backward from the mathematical Ideal bound on our highest-yield unsolved slices. Invent new mathematical structures, parameterizations, coupled multi-body operators, dual/spectral/algebraic formulations, or non-uniform constructions that **do not exist in standard textbooks or public notebooks** and avoid every Tabu item.
+3. **Queue Your Novel Hypotheses via `swarm-propose`** (ordered reasoning -> novel insight -> mechanism -> title):
    ```bash
    swarm-propose --parent-id "{node['node_id']}" --island-id {island['island_id']} --role IMPLEMENT \\
-     --target-slice "<target regime or scale band>" \\
-     --title "<concise 4-8 word title>" \\
-     --hypothesis "IDEAL BOUND: <bound>. LITERATURE: <paper/construction>. OBSTRUCTION: <why current elites fall short>. MECHANISM: <universal parametric construction / solver algorithm>." \\
-     --rationale "<expected score drop on target slice and why it differs from Tabu items>"
+     --rationale "<first-principles derivation showing why known/online methods plateau here and how much reducible gap is unlocked>" \\
+     --novel-insight "<exact assumption of known methods broken + the novel mathematical insight or representation invented>" \\
+     --hypothesis "<precise mathematical construction and fast C++20/CUDA/Python solver algorithm to implement and test>" \\
+     --target-slice "<target unsolved regime or scale band>" \\
+     --title "<concise 4-8 word novel mechanism title>"
    ```
-4. Stop immediately after confirming `swarm-propose` succeeded.
 """
         elif role == "DEBUG":
             task_prompt = f"""{common_context}
-## Your Assignment (`DEBUG` — Repair Broken Candidate)
+## Your Assignment (`DEBUG` — Repair & Preserve Novel Mechanism)
 Hypothesis being repaired: **{node['title']}**
-{node['hypothesis']}
+{f"Novel Insight to Preserve: {node['novel_insight']}" + chr(10) if node.get('novel_insight') else ""}{node['hypothesis']}
 
 Failure Diagnostics to Fix:
 {node['rationale']}
 
 Steps:
-1. Inspect `{copied_cand}` and diagnose the exact bug, constraint violation, or timeout.
-2. Fix the code/candidate cleanly while preserving the core mathematical idea.
-3. Run `swarm-eval {copied_cand}` via bash until `"valid": true`!
-4. Once valid, run:
+1. Inspect `{copied_cand}` and diagnose the exact bug, constraint violation, numerical precision issue, or timeout.
+2. Repair the implementation cleanly **without diluting the core novel mathematical mechanism into a trivial fallback**.
+3. Verify with `swarm-eval {copied_cand}` until `"valid": true`, then submit:
    ```bash
-   swarm-submit {copied_cand} --summary "Fixed bug and verified candidate: <details>"
+   swarm-submit {copied_cand} --summary "Repaired novel mechanism and verified candidate: <details>"
    ```
 """
         elif role == "CROSSOVER":
             task_prompt = f"""{common_context}
-## Your Assignment (`CROSSOVER` — Cross-Island Algorithmic Synthesis)
+## Your Assignment (`CROSSOVER` — Emergent Cross-Island Synthesis)
 Goal: **{node['title']}**
 {node['hypothesis']}
 
 - Primary parent solver code: `./primary_solvers/` (candidate in `./candidate/`).
 - Secondary island solver code: `./secondary_solvers/` (candidate in `./secondary_parent/`).
 
-CRITICAL RULE: `vault/best` already unions per-instance JSON outputs automatically—NEVER waste time merely taking per-key min/max of JSON files! Your job is **ALGORITHMIC FUSION**:
-1. Inspect `./primary_solvers/` and `./secondary_solvers/` to identify each parent's mathematical mechanism (e.g. constructive parametric family vs. active-set SLP / Jacobian optimizer).
-2. Write a fused pipeline that feeds one parent's geometric ansatz/generator into the other parent's compactor across unsolved Gap Ledger instances, writing strictly improved solutions to `{copied_cand}`.
-3. Verify with `swarm-eval {copied_cand}` and submit via `swarm-submit {copied_cand} --summary "<fused algorithm & instances improved>"`.
+CRITICAL RULE: `vault/best` already unions per-instance JSON outputs automatically—NEVER waste time taking per-key min/max of JSON files!
+1. Analyze the distinct mathematical representations in `./primary_solvers/` and `./secondary_solvers/`.
+2. Invent an **emergent synthesis** that neither parent nor standard online methods possess alone (e.g., embedding one island's algebraic/topological parameterization directly inside the other island's coupled continuous/SLP operator) across unsolved Gap Ledger slices.
+3. Verify with `swarm-check` / `swarm-eval {copied_cand}` and submit via `swarm-submit {copied_cand} --summary "<emergent synthesized mechanism & instances improved>"`.
 """
         else:
             # IMPLEMENT or DEEPEN
+            insight_banner = (
+                f"\n### Core Novel Frontier Insight to Realize\n{node['novel_insight']}\n"
+                if str(node.get("novel_insight") or "").strip()
+                else ""
+            )
             task_prompt = f"""{common_context}
-## Your Assignment (`{role}` — Ideal-Backtracking Builder & Optimizer)
+## Your Assignment (`{role}` — Novel Mechanism Builder & Frontier Compounder)
 Title: **{node['title']}**
+{insight_banner}
 Hypothesis:
 {node['hypothesis']}
 
-Rationale:
+First-Principles Rationale:
 {node['rationale']}
 
-CRITICAL EFFICIENCY RULE: Read `./shared/WORKSPACE_INDEX.md` & `./shared/literature/` (or run `swarm-search` if you need an exact formula) and compound `./solvers_vault/` + `./shared/packing_sdk.hpp` instead of writing boilerplate from scratch!
-Steps:
-1. Build a fast C++20 (`g++ -O3 -fopenmp`, optionally `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python solver in your working directory targeting your assigned slice, emitting ONLY your newly generated/improved subproblems into a small `patch.json`.
-2. Verify & merge your patch in `<15ms` via `swarm-check patch.json --apply --candidate {copied_cand}` (checks exact 128-bit SAT clearance, prints per-instance wins or overlap pairs, and atomically merges valid wins into `{copied_cand}` + `vault/best`!).
-3. Once your improvements are merged, run `swarm-submit {copied_cand} --summary "<literature/mechanism used, instances improved, and verified score>"`!
+CRITICAL FRONTIER RULE: Do NOT regress into generic textbook heuristics (blind random jitter, unguided SA cooling tweaks, or re-running unmodified baseline scripts)—known methods cannot move this frontier! Realize the **novel mathematical mechanism** above, reusing low-level fast primitives in `./solvers_vault/` and `./shared/` so all your effort goes into the new math/algorithm:
+1. Implement the novel mathematical construction or coupled solver in C++20 (`g++ -O3 -fopenmp`, e.g. `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python targeting your assigned slice, emitting improved subproblems into `patch.json`.
+2. Verify & merge in `<15ms` via `swarm-check patch.json --apply --candidate {copied_cand}` (diagnose exact active-contact/obstruction geometry from its feedback and refine your novel operator if needed!).
+3. Submit your verified candidate via `swarm-submit {copied_cand} --summary "<novel insight/operator built, what known barrier it broke, and verified score>"`!
 """
         return system_prompt, task_prompt
 
     def _replenish_frontier_if_needed(self) -> None:
-        """Keep the multiplying tree fed, ensuring IMPLEMENT builders never run dry when EXPLORE cools down."""
-        stats = self.db.get_summary_stats()
-        active_or_queued = stats["queued"] + stats["running"]
-        with self.db._lock, self.db._connect() as conn:
-            imp_supply = int(
-                conn.execute(
-                    "SELECT COUNT(*) AS c FROM nodes WHERE role='IMPLEMENT' AND status IN ('QUEUED','RUNNING')"
-                ).fetchone()["c"]
-                or 0
-            )
-        min_buffer = max(self.cfg.num_islands, self.cfg.concurrency)
-        need_total = max(0, min_buffer - active_or_queued)
-        need_imp = max(0, self.cfg.concurrency - imp_supply)
-        needed = max(need_total, need_imp)
-        if needed <= 0:
-            return
-
+        """Keep EXPLORE hypothesis creators fed per island; inject minimal fallback builders only when queue runs dry."""
         islands = self.db.get_islands()
         if not islands:
             return
 
-        only_builders = (active_or_queued >= min_buffer and need_imp > 0)
-        for idx in range(needed):
+        with self.db._lock, self.db._connect() as conn:
+            exp_by_isl = {
+                int(r["island_id"]): int(r["c"])
+                for r in conn.execute(
+                    "SELECT island_id, COUNT(*) AS c FROM nodes "
+                    "WHERE role='EXPLORE' AND status IN ('QUEUED','RUNNING') GROUP BY island_id"
+                ).fetchall()
+            }
+            builder_supply = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM nodes "
+                    "WHERE role IN ('IMPLEMENT','DEEPEN','CROSSOVER','DEBUG') AND status IN ('QUEUED','RUNNING')"
+                ).fetchone()["c"]
+                or 0
+            )
+
+        # 1. Ensure every active island has at least 1 fresh EXPLORE hypothesis creator ready to invent novel leaps!
+        for isl in islands:
+            iid = int(isl["island_id"])
+            if exp_by_isl.get(iid, 0) < 1:
+                parent = self.db.select_ucb_parent(iid)
+                pid = parent["node_id"] if parent else self.db.get_meta("baseline_node_id")
+                pscore = parent["score"] if parent else self.db.get_meta("baseline_score")
+                pspeed = float(parent["speedup"] or 1.0) if parent else 1.0
+                self.db.create_node(
+                    island_id=iid,
+                    role="EXPLORE",
+                    title=f"Invent novel leaps on {isl['name']} (from {pid})",
+                    hypothesis=(
+                        f"Diagnose why online/published methods and `{pid}` (score={pscore}, {pspeed:.4f}x) plateau on `{isl['name']}`, "
+                        f"break their hidden structural assumption, and propose 2-3 genuinely novel mathematical insights."
+                    ),
+                    origin="researcher",
+                    rationale=f"Entropic UCB selected frontier parent {pid} for novel first-principles expansion.",
+                    parent_id=pid,
+                    novelty_threshold=None,
+                )
+
+        # 2. Only inject minimal emergency fallback IMPLEMENT nodes (`origin='auto_replenish'`, lowest priority=5.0)
+        # when total builder supply falls below half concurrency (e.g. while EXPLORE models cool down).
+        min_builder_floor = max(2, self.cfg.concurrency // 2)
+        need_fallback = max(0, min_builder_floor - builder_supply)
+        for _ in range(need_fallback):
             isl = islands[self._island_rr % len(islands)]
             self._island_rr += 1
             iid = int(isl["island_id"])
@@ -563,36 +596,25 @@ Steps:
             pid = parent["node_id"] if parent else self.db.get_meta("baseline_node_id")
             pscore = parent["score"] if parent else self.db.get_meta("baseline_score")
             pspeed = float(parent["speedup"] or 1.0) if parent else 1.0
-
-            # Mix 1 EXPLORE with 2 IMPLEMENT normally; when queue already holds EXPLOREs, replenish IMPLEMENT directly!
-            if (not only_builders) and (idx % 3 == 0):
-                self.db.create_node(
-                    island_id=iid,
-                    role="EXPLORE",
-                    title=f"Explore wave on {isl['name']} (from {pid})",
-                    hypothesis=(
-                        f"Propose 2-3 novel mathematical/algorithmic leaps along `{isl['name']}` "
-                        f"starting from `{pid}` (score={pscore}, {pspeed:.4f}x)."
-                    ),
-                    rationale=f"Entropic UCB selected parent {pid} for frontier expansion.",
-                    parent_id=pid,
-                    novelty_threshold=None,
-                )
-            else:
-                self.db.create_node(
-                    island_id=iid,
-                    role="IMPLEMENT",
-                    title=f"Ideal-backtrack {isl['name']} full-scale solver",
-                    hypothesis=(
-                        f"IDEAL BOUND: Work backward from theoretical optimum across ALL problem scales. "
-                        f"OBSTRUCTION: Overcome multi-body / parity bottlenecks on untouched regimes. "
-                        f"MECHANISM: Apply `{isl['name']}` ({isl['strategy_focus']}) atop `{pid}` (score={pscore}, {pspeed:.4f}x), "
-                        f"reusing `./solvers_vault/` and `./shared/` OpenMP/CUDA primitives across the entire instance range."
-                    ),
-                    rationale=f"Full-scale Ideal-Backtracking builder dispatch on island `{isl['name']}`.",
-                    parent_id=pid,
-                    novelty_threshold=None,
-                )
+            tslice = self._next_target_slice()
+            self.db.create_node(
+                island_id=iid,
+                role="IMPLEMENT",
+                title=f"Novel operator synthesis on {isl['name']}",
+                novel_insight=(
+                    f"Known textbook heuristics on `{isl['name']}` have plateaued; invent a non-standard coupled "
+                    f"geometric/algebraic operator not yet present in `./solvers_vault/`."
+                ),
+                hypothesis=(
+                    f"Break the local-basin barrier atop `{pid}` (score={pscore}, {pspeed:.4f}x) by designing and testing "
+                    f"an original mathematical parameterization or coupled multi-body operator along `{isl['name']}` ({isl['strategy_focus']})."
+                ),
+                origin="auto_replenish",
+                target_slice=tslice,
+                rationale=f"Fallback novel-operator builder on `{isl['name']}` while keeping priority below researcher proposals.",
+                parent_id=pid,
+                novelty_threshold=None,
+            )
 
     async def _run_node_worker(
         self,
@@ -905,6 +927,9 @@ Steps:
         rescued = self.db.recover_rate_limited_nodes(self.ws / "logs")
         if rescued:
             self.db.log_event("INFO", "coordinator", f"Resurrected {rescued} rate-limited node(s) back to QUEUED.")
+        pruned = self.db.prune_stale_queued_nodes(max_explore_per_island=4)
+        if pruned:
+            self.db.log_event("INFO", "coordinator", f"Archived {pruned} superseded stale EXPLORE node(s) to keep frontier fresh.")
         self._last_rescue_check = time.time()
 
         await self.eval_service.start_rpc_server()
@@ -940,6 +965,7 @@ Steps:
                     r_cnt = self.db.recover_rate_limited_nodes(self.ws / "logs")
                     if r_cnt:
                         self.db.log_event("INFO", "coordinator", f"Auto-resurrected {r_cnt} rate-limited node(s) back to QUEUED.")
+                    self.db.prune_stale_queued_nodes(max_explore_per_island=4)
 
                 stats = self.db.get_summary_stats()
                 if max_evaluations is not None and stats["evaluated_total"] >= max_evaluations:
@@ -1000,6 +1026,7 @@ Steps:
                         next_node = self.db.claim_next_queued_node(
                             preferred_island=self._island_rr % max(1, self.cfg.num_islands),
                             exclude_roles=tuple(sorted(excl_set)),
+                            boost_explore=(active_exp == 0 and self.cfg.concurrency >= 3),
                         )
                         if next_node is None:
                             break

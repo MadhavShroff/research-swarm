@@ -218,7 +218,7 @@ class SwarmConfig:
     effort: str = "minimal"
     concurrency: int = 10
     max_concurrent_researchers: int = 2
-    reserved_frontier_slots: int = 1
+    reserved_frontier_slots: int = 2
     max_heavy_mux_procs: int = 24
     eval_workers: int = 4
     num_islands: int = 5

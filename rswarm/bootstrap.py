@@ -127,23 +127,25 @@ swarm-eval <candidate_path>
 """,
         "swarm-propose": """---
 name: swarm-propose
-description: Propose a new research hypothesis to branch and multiply the autonomous research tree.
+description: Propose a genuinely novel frontier hypothesis (beyond online/known methods) to branch and multiply the research tree.
 ---
 
 # swarm-propose
 
-Queue a novel hypothesis for implementation in the multiplying research tree:
+Queue a novel first-principles hypothesis for implementation in the multiplying research tree (order reasoning -> novel insight -> mechanism -> title):
 
 ```bash
 swarm-propose \\
-  --title "Short descriptive hypothesis title" \\
-  --hypothesis "Precise mathematical or algorithmic construction to build" \\
-  --rationale "Why this overcomes current bottlenecks and approaches SOTA" \\
+  --rationale "First-principles diagnosis of why online/known methods plateau on this slice" \\
+  --novel-insight "Hidden assumption broken + original mathematical structure, invariant, or operator invented" \\
+  --hypothesis "Precise falsifiable mathematical construction and solver algorithm to build" \\
+  --target-slice "Specific unsolved regime or scale band" \\
+  --title "Short descriptive novel mechanism title" \\
   --role IMPLEMENT
 ```
 
-- Automatically passes through the pre-execution Novelty Gate so duplicate ideas are filtered.
-- Accepted ideas immediately spawn parallel Implementer agents in new tmux windows.
+- Known/online methods cannot advance the frontier—every proposal must articulate a genuine `--novel-insight`.
+- Automatically passes through the pre-execution Novelty Gate and prioritizes high-novelty researcher leaps ahead of fallback builders.
 """,
         "swarm-submit": """---
 name: swarm-submit
@@ -188,24 +190,27 @@ swarm-hosted-submit <candidate_path> --note "Brief description of breakthrough"
 
     charter = f"""# Autonomous Research Swarm Charter (`{cfg.name}`)
 
-## Mission
-Solve the problem below and **far exceed the best leaderboard performance**.
+## Mission & Frontier Novelty Axiom
+Advance the mathematical and algorithmic frontier **far beyond Leaderboard #1**.
 - Optimization direction: **`{cfg.direction}`**
-- Target / Leaderboard Score to Beat: **`{cfg.leaderboard_target}`**
+- Milestone / Leaderboard Target: **`{cfg.leaderboard_target}`**
+- **Frontier Novelty Axiom**: Online papers, survey tables, public notebooks, and textbook heuristics are *only the competitive floor*—they CANNOT evolve the frontier. Use literature (`swarm-search` / `./shared/literature/`) strictly as a **boundary map** to see what hidden assumption traps known methods, then **break that assumption with original mathematical insights and novel operators**. Never treat an empirical public record as optimal without a formal lower-bound proof.
 
 ## Problem Brief
 {cfg.brief}
 
 ## Installed Swarm Tools (on `PATH`)
-1. **`swarm-eval <candidate_path>`** — Test and benchmark your candidate locally via the coordinator.
-2. **`swarm-propose --title "..." --hypothesis "..." --rationale "..."`** — Queue new child hypotheses to multiply the research tree.
-3. **`swarm-submit <candidate_path> --summary "..." [--request-hosted]`** — Submit your best verified candidate for Vault promotion, Bulletin broadcast, and tree expansion.
-4. **`swarm-hosted-submit <candidate_path> --note "..."`** — Request hosted leaderboard evaluation (quota-guarded).
+1. **`swarm-check <patch.json> --apply`** — Fast sparse patch verification and atomic pool merge (`<15ms` when supported).
+2. **`swarm-eval <candidate_path>`** — Full canonical verification and benchmarking via the coordinator.
+3. **`swarm-propose --rationale "..." --novel-insight "..." --hypothesis "..." --target-slice "..." --title "..."`** — Queue novel frontier leaps (prioritized ahead of fallback builders).
+4. **`swarm-search "<query>"` / `swarm-fetch "<target>"`** — Map prior art and extract full PDFs/arXiv `.tex` into `./shared/literature/`.
+5. **`swarm-submit <candidate_path> --summary "..." [--request-hosted]`** — Submit verified breakthroughs for Vault promotion, Bulletin broadcast, and tree expansion.
+6. **`swarm-hosted-submit <candidate_path> --note "..."`** — Request hosted leaderboard evaluation (quota-guarded).
 
-## Ideal-Backtracking & Compounding Rules
+## First-Principles Discovery & Compounding Rules
 - Work strictly inside your assigned working directory (`./candidate/` or local files).
-- Inspect `./solvers_vault/` and `./shared/` first to reuse and extend proven winning C++20/OpenMP/CUDA solvers rather than starting from scratch.
-- Work **backward from the Ideal lower/upper bound**: target universal parametric constructions and collective continuous-flow solvers across the **entire problem scale** (never toy single-instance scripts), ignoring provably rigid optima (`reducible_gap == 0`).
+- Reuse fast low-level C++20/OpenMP/CUDA primitives in `./solvers_vault/` and `./shared/` so 100% of your effort goes into **novel mathematical structures and operators** rather than boilerplate.
+- Work **backward from the theoretical Ideal bound**: break the symmetry, pitch, or relaxation assumptions of known methods across unsolved gap slices.
 - `eval/` is read-only. Never attempt to modify or bypass `eval/local_eval.sh` or `eval/merge_pool.sh`.
 - Always verify with `swarm-eval` and submit via `swarm-submit`.
 """

@@ -1039,12 +1039,17 @@ async function selectNode(nodeId, { openInspectorDrawer = false } = {}) {
           <div class="kv-cell"><div class="kv-k">Speedup vs Origin</div><div class="kv-v" style="color:var(--win)">${Number(n.speedup || 0).toFixed(4)}x</div></div>
           <div class="kv-cell"><div class="kv-k">Model Used</div><div class="kv-v" style="color:#c084fc;font-size:11.5px">${escapeHtml(n.model_used || '—')}</div></div>
           <div class="kv-cell"><div class="kv-k">Reasoning Effort</div><div class="kv-v" style="color:var(--gold);font-size:11.5px">${escapeHtml(n.effort_used || '—')}</div></div>
+          <div class="kv-cell"><div class="kv-k">Novelty Score</div><div class="kv-v" style="color:#38bdf8;font-size:11.5px">${n.novelty_score != null ? Number(n.novelty_score).toFixed(2) : '—'} (${escapeHtml(n.origin || 'researcher')})</div></div>
           <div class="kv-cell"><div class="kv-k">tmux Window</div><div class="kv-v" style="color:var(--accent);font-size:11.5px">${escapeHtml(n.tmux_window || '—')}</div></div>
-          <div class="kv-cell"><div class="kv-k">Harness Mode</div><div class="kv-v" style="font-size:11px">${escapeHtml(n.harness_used || '—')}</div></div>
         </div>
       </div>
+      ${n.novel_insight && n.novel_insight.trim() ? `
+      <div class="sec-box" style="border-color:rgba(56,189,248,0.45);background:rgba(56,189,248,0.06);">
+        <div class="sec-label" style="color:#38bdf8;">Novel Frontier Insight (Beyond Known Methods)</div>
+        <pre class="code-block">${escapeHtml(n.novel_insight)}</pre>
+      </div>` : ''}
       <div class="sec-box">
-        <div class="sec-label">Hypothesis & Mathematical Rationale</div>
+        <div class="sec-label">Hypothesis & First-Principles Rationale</div>
         <pre class="code-block">${escapeHtml((n.hypothesis || '') + (n.rationale ? '\n\nRationale:\n' + n.rationale : ''))}</pre>
       </div>
       <div class="sec-box">
