@@ -495,6 +495,79 @@ PY
             srv.shutdown()
             srv.server_close()
 
+    async def test_priority_unstarvation_and_pool_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ws = tmp_path / "ws-pool"
+            local_ev = tmp_path / "local_eval.sh"
+            local_ev.write_text(
+                '#!/usr/bin/env bash\n'
+                'python3 - "$1" <<\'PY\'\n'
+                'import json, sys\n'
+                'd = json.loads(open(sys.argv[1]).read())\n'
+                'sc = float(d.get("a", 10.0)) + float(d.get("b", 10.0))\n'
+                'print(json.dumps({"valid": True, "score": sc, "eval_ms": 1.0, "diagnostics": "ok", "metrics": {}}))\n'
+                'PY\n'
+            )
+            local_ev.chmod(0o755)
+            hosted_ev = tmp_path / "hosted_submit.sh"
+            hosted_ev.write_text('#!/usr/bin/env bash\necho \'{"submitted": false}\'\n')
+            hosted_ev.chmod(0o755)
+            base_c = tmp_path / "overrides.json"
+            base_c.write_text('{"a": 10.0, "b": 10.0}\n')
+
+            cfg = SwarmConfig(name="ws-pool", workspace_dir=str(ws), brief="Minimize a+b.", direction="minimize")
+            db = SwarmDB(ws / "state" / "swarm.db")
+            rbin = Path(__file__).resolve().parent.parent / "bin" / "rswarm"
+            boot = await bootstrap_workspace(
+                cfg, db, rbin, local_eval_src=str(local_ev), hosted_eval_src=str(hosted_ev), baseline_src=str(base_c)
+            )
+
+            # Install eval/merge_pool.sh taking elementwise min across keys "a" and "b"
+            (ws / "eval").chmod(0o755)
+            mp = ws / "eval" / "merge_pool.sh"
+            mp.write_text(
+                '#!/usr/bin/env bash\n'
+                'python3 - "$1" "$2" <<\'PY\'\n'
+                'import json, sys\n'
+                'from pathlib import Path\n'
+                'cand = json.loads(Path(sys.argv[1]).read_text())\n'
+                'best_f = Path(sys.argv[2]) / "overrides.json"\n'
+                'cur = json.loads(best_f.read_text()) if best_f.is_file() else {"a": 10.0, "b": 10.0}\n'
+                'cnt = 0\n'
+                'for k in ("a", "b"):\n'
+                '    if k in cand and float(cand[k]) < float(cur.get(k, 10.0)):\n'
+                '        cur[k] = float(cand[k]); cnt += 1\n'
+                'best_f.write_text(json.dumps(cur))\n'
+                'sc = float(cur["a"]) + float(cur["b"])\n'
+                'print(json.dumps({"valid": True, "merged_count": cnt, "score": sc, "best_path": str(best_f), "diagnostics": "merged"}))\n'
+                'PY\n'
+            )
+            mp.chmod(0o555)
+            (ws / "eval").chmod(0o555)
+
+            # 1. Verify DEEPEN and CROSSOVER strictly preempt queued IMPLEMENT!
+            imp_id, _, _ = db.create_node(island_id=0, role="IMPLEMENT", title="Imp", parent_id=boot["baseline_node_id"], novelty_threshold=None)
+            deep_id, _, _ = db.create_node(island_id=0, role="DEEPEN", title="Deep", parent_id=boot["baseline_node_id"], novelty_threshold=None)
+            cross_id, _, _ = db.create_node(island_id=0, role="CROSSOVER", title="Cross", parent_id=boot["baseline_node_id"], novelty_threshold=None)
+
+            c_first = db.claim_next_queued_node(preferred_island=0, exclude_roles=("EXPLORE",))
+            c_second = db.claim_next_queued_node(preferred_island=0, exclude_roles=("EXPLORE",))
+            self.assertEqual(c_first["node_id"], cross_id)
+            self.assertEqual(c_second["node_id"], deep_id)
+
+            # 2. Verify disjoint sub-instance wins ("a"=6 on imp_id, "b"=5 on deep_id) combine to score 11.0!
+            svc = EvalAndTreeService(cfg, db)
+            f1 = tmp_path / "c_a.json"
+            f1.write_text('{"a": 6.0, "b": 10.0}\n')
+            await svc.handle_submit({"node_id": imp_id, "candidate_path": str(f1), "summary": "improved a"})
+            self.assertAlmostEqual(float(db.get_meta("best_score")), 16.0, places=4)
+
+            f2 = tmp_path / "c_b.json"
+            f2.write_text('{"a": 10.0, "b": 5.0}\n')
+            await svc.handle_submit({"node_id": deep_id, "candidate_path": str(f2), "summary": "improved b"})
+            self.assertAlmostEqual(float(db.get_meta("best_score")), 11.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()
