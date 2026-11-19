@@ -26,7 +26,35 @@ FORBIDDEN_MODEL_PREFIXES = (
     "anthropic-gpt-",
     "gpt-6-astra",
 )
-FORBIDDEN_HARNESS_NAMES = ("agy", "antigravity")
+FORBIDDEN_HARNESS_NAMES: tuple[str, ...] = ()
+
+_AGY_XHIGH_BASES = ("gemini-4-neon", "gemini-4-hydrogen")
+_AGY_TIER_SUFFIXES = ("-low", "-medium", "-high", "-xhigh")
+
+
+def is_gemini_agy_model(model_id: str | None) -> bool:
+    """Return True if `model_id` is a Google Gemini model served through the `agy` CLI."""
+    if not model_id:
+        return False
+    low = model_id.strip().lower()
+    return low.startswith("gemini-")
+
+
+def resolve_agy_model_id(model_id: str, effort: str = "high") -> str:
+    """Map (`gemini-4-carbon`, `max`) -> `gemini-4-carbon-high` (highest valid tier for each Gemini family)."""
+    raw = (model_id or "").strip().lower()
+    if raw.startswith("gemini-pro-orchestrator") or raw.endswith(_AGY_TIER_SUFFIXES):
+        return raw
+    eff = (effort or "high").strip().lower()
+    if eff in ("minimal", "low"):
+        tier = "low"
+    elif eff == "medium":
+        tier = "medium"
+    elif eff in ("xhigh", "max"):
+        tier = "xhigh" if raw in _AGY_XHIGH_BASES else "high"
+    else:
+        tier = "high"
+    return f"{raw}-{tier}"
 
 
 def validate_model_choice(model_id: str, allow_override: bool = False) -> str:
@@ -46,9 +74,9 @@ def validate_model_choice(model_id: str, allow_override: bool = False) -> str:
 
 
 def validate_harness_choice(harness: str, allow_override: bool = False) -> str:
-    """Validate harness selection and block agy by default per founder config."""
+    """Validate harness selection (`claude-mux`, `claude-mux-scale`, `claude-mux-lite`, `agy`, `custom`)."""
     cleaned = (harness or "").strip().lower()
-    valid = ("claude-mux", "claude-mux-scale", "claude-mux-lite", "custom")
+    valid = ("claude-mux", "claude-mux-scale", "claude-mux-lite", "agy", "custom")
     if not allow_override and cleaned in FORBIDDEN_HARNESS_NAMES:
         raise ValueError(
             f"Harness '{cleaned}' is disabled by default. Use 'claude-mux' or 'claude-mux-scale'."
@@ -87,7 +115,8 @@ def make_tmux_window_name(role: str, island_name: str, title: str, node_id: str)
 
 _RATE_LIMIT_RE = re.compile(
     r"temporarily limiting requests|exceed your account's rate limit|"
-    r"rate[\s_-]?limit|too many requests|\b429\b|\b529\b|\b502\b|\b503\b|\b504\b|"
+    r"rate[\s_-]?limit|resource_exhausted|quota exceeded|too many requests|"
+    r"\b429\b|\b529\b|\b502\b|\b503\b|\b504\b|"
     r"overloaded|bad gateway|service unavailable|lock held by another",
     re.IGNORECASE,
 )

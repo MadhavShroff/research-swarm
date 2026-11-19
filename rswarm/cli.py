@@ -359,6 +359,20 @@ def _cmd_models(args: argparse.Namespace) -> int:
             mt.add_row(mid, str(r.get("display_name") or mid))
         console.print(mt)
 
+    agy_table = Table(title="Available Google Gemini Models (via Sparky `agy` CLI)")
+    agy_table.add_column("Model ID", style="bold bright_cyan")
+    agy_table.add_column("Max Thinking Tier / Notes", style="white")
+    for mid, desc in (
+        ("gemini-4-carbon-high", "Gemini 4 Carbon (max thinking; `--model gemini-4-carbon --effort max` auto-maps here)"),
+        ("gemini-4-argon-high", "Gemini 4 Argon (max thinking; `--model gemini-4-argon --effort max` auto-maps here)"),
+        ("gemini-4-neon-xhigh", "Gemini 4 Neon (xhigh max thinking)"),
+        ("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (xhigh max thinking)"),
+        ("gemini-pro-orchestrator", "Gemini Pro Orchestrator (Carbon)"),
+        ("gemini-3.8-flash-high", "Gemini 3.8 Flash (fast high-thinking builder)"),
+    ):
+        agy_table.add_row(mid, desc)
+    console.print(agy_table)
+
     if args.workspace:
         ws = Path(args.workspace).expanduser().resolve()
         cfg, _ = _load_workspace_cfg(ws)
@@ -462,7 +476,7 @@ def _add_shared_init_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--target", type=float, default=None, help="Goal score milestone.")
     p.add_argument("--leaderboard-one", type=float, default=None, help="Current #1 score on the public competition leaderboard.")
     p.add_argument("--submit-threshold", type=float, default=None, help="Score threshold (e.g. Top-5) required before hosted leaderboard submission fires.")
-    p.add_argument("--harness", default="claude-mux-scale", choices=["claude-mux", "claude-mux-scale", "claude-mux-lite", "custom"])
+    p.add_argument("--harness", default="claude-mux-scale", choices=["claude-mux", "claude-mux-scale", "claude-mux-lite", "agy", "custom"])
     p.add_argument("--custom-cmd", default="", help="Command template for --harness custom ({prompt_file}, {model}, {workdir}).")
     p.add_argument("--researcher-model", default=DEFAULT_DEEPSEEK_MODEL, help="Mux model ID for Researcher (EXPLORE) agents.")
     p.add_argument("--researcher-effort", default="max", choices=list(VALID_EFFORTS), help="Effort for Researcher agents (default: max).")
@@ -514,7 +528,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run", help="Run or resume an existing initialized research workspace.")
     p_run.add_argument("--workspace", required=True, help="Path to initialized workspace directory.")
     p_run.add_argument("--concurrency", type=int, default=None)
-    p_run.add_argument("--harness", choices=["claude-mux", "claude-mux-scale", "claude-mux-lite", "custom"], default=None)
+    p_run.add_argument("--harness", choices=["claude-mux", "claude-mux-scale", "claude-mux-lite", "agy", "custom"], default=None)
     p_run.add_argument("--researcher-model", default=None)
     p_run.add_argument("--implementer-model", default=None)
     p_run.add_argument("--dashboard-port", type=int, default=None)

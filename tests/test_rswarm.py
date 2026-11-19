@@ -18,8 +18,10 @@ from rswarm.harnesses import HarnessResult
 from rswarm.models import (
     SwarmConfig,
     compute_speedup_and_progress,
+    is_gemini_agy_model,
     is_rate_limit_or_transient_text,
     make_tmux_window_name,
+    resolve_agy_model_id,
     validate_harness_choice,
     validate_model_choice,
 )
@@ -36,9 +38,14 @@ class TestRswarmCore(unittest.IsolatedAsyncioTestCase):
         for forbidden in ("claude-opus-4-6", "claude-sonnet-4-6", "fable", "astra", "anthropic-gpt-6-1-sol"):
             with self.assertRaises(ValueError):
                 validate_model_choice(forbidden)
-        with self.assertRaises(ValueError):
-            validate_harness_choice("agy")
+        self.assertEqual(validate_harness_choice("agy"), "agy")
         self.assertEqual(validate_harness_choice("claude-mux-scale"), "claude-mux-scale")
+        self.assertTrue(is_gemini_agy_model("gemini-4-carbon"))
+        self.assertTrue(is_gemini_agy_model("gemini-4-carbon-high"))
+        self.assertFalse(is_gemini_agy_model("anthropic-morph-dsv41flash"))
+        self.assertEqual(resolve_agy_model_id("gemini-4-carbon", "max"), "gemini-4-carbon-high")
+        self.assertEqual(resolve_agy_model_id("gemini-4-carbon-high", "max"), "gemini-4-carbon-high")
+        self.assertEqual(resolve_agy_model_id("gemini-4-neon", "max"), "gemini-4-neon-xhigh")
 
     def test_live_role_model_routing_and_non_destructive_scale(self) -> None:
         from rswarm.cli import main as cli_main

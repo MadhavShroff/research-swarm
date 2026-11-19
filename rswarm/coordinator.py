@@ -17,7 +17,13 @@ from .dashboard import DashboardServer
 from .db import SwarmDB
 from .governor import ResourceGovernor
 from .harnesses import HarnessRunner
-from .models import SwarmConfig, is_rate_limit_or_transient_text, make_tmux_window_name
+from .models import (
+    SwarmConfig,
+    is_gemini_agy_model,
+    is_rate_limit_or_transient_text,
+    make_tmux_window_name,
+    resolve_agy_model_id,
+)
 from .rpc import EvalAndTreeService
 from .tmux_pool import TmuxPool
 
@@ -547,8 +553,12 @@ Steps:
         islands = {int(i["island_id"]): i for i in self.db.get_islands()}
         island = islands.get(int(node["island_id"]), {"island_id": 0, "name": "main", "strategy_focus": ""})
         model_id, effort_lvl = self.cfg.model_and_effort_for_role(role)
-        # Anthropic subscription rows (`claude-*`) require `claude -p` (`claude-mux`) to forward OAuth.
-        if model_id.lower().startswith("claude-") and concrete_harness == "claude-mux-lite":
+        # Gemini models (`gemini-*`) route automatically through Sparky's `agy` CLI (`--output-format stream-json`).
+        # Anthropic subscription rows (`claude-*`) route through `claude -p` (`claude-mux`) to forward OAuth.
+        if is_gemini_agy_model(model_id):
+            concrete_harness = "agy"
+            model_id = resolve_agy_model_id(model_id, effort_lvl)
+        elif model_id.lower().startswith("claude-") and concrete_harness == "claude-mux-lite":
             concrete_harness = "claude-mux"
         win_name = make_tmux_window_name(role, str(island["name"]), str(node["title"]), nid)
 
