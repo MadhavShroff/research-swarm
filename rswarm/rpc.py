@@ -724,29 +724,46 @@ class EvalAndTreeService:
             local_score = float(node["score"])
 
         sub_thresh = self.cfg.leaderboard_submit_threshold
-        if sub_thresh is not None and not bool(req.get("force", False)):
-            if local_score is None:
-                check = await self.execute_raw_local_eval(cpath)
-                if not check["valid"] or check["score"] is None:
-                    msg = f"Cannot submit invalid candidate to leaderboard: {check['diagnostics']}"
-                    self.db.log_event("WARN", node_id or "hosted", msg)
-                    return {"ok": False, "submitted": False, "gated": True, "error": msg}
+        is_forced = bool(req.get("force", False))
+        if local_score is None:
+            check = await self.execute_raw_local_eval(cpath)
+            if check["valid"] and check["score"] is not None:
                 local_score = float(check["score"])
-            if not meets_or_beats_score(float(local_score), float(sub_thresh), self.cfg.direction):
-                cmp_op = "<=" if self.cfg.direction == "minimize" else ">="
-                msg = (
-                    f"Blocked by Top-5 leaderboard gate: verified score {local_score} must be "
-                    f"{cmp_op} {sub_thresh} before submitting to the competition leaderboard."
-                )
-                self.db.log_event("INFO", node_id or "hosted", msg)
-                return {
-                    "ok": False,
-                    "submitted": False,
-                    "gated": True,
-                    "threshold": sub_thresh,
-                    "local_score": local_score,
-                    "error": msg,
-                }
+
+        if not is_forced:
+            if sub_thresh is not None:
+                if local_score is None or not meets_or_beats_score(float(local_score), float(sub_thresh), self.cfg.direction):
+                    cmp_op = "<=" if self.cfg.direction == "minimize" else ">="
+                    msg = (
+                        f"Blocked by Top-5 leaderboard gate: verified score {local_score} must be "
+                        f"{cmp_op} {sub_thresh} before submitting to the competition leaderboard."
+                    )
+                    self.db.log_event("INFO", node_id or "hosted", msg)
+                    return {
+                        "ok": False,
+                        "submitted": False,
+                        "gated": True,
+                        "threshold": sub_thresh,
+                        "local_score": local_score,
+                        "error": msg,
+                    }
+            # Smart quota pacer: only auto-spend daily hosted submissions when beating last submitted score by min_hosted_improvement!
+            if local_score is not None and self.cfg.min_hosted_improvement > 0:
+                with self.db._lock, self.db._connect() as conn:
+                    prev = conn.execute(
+                        "SELECT local_score FROM hosted_submissions WHERE status='SUBMITTED' AND local_score IS NOT NULL "
+                        f"ORDER BY local_score {'ASC' if self.cfg.direction == 'minimize' else 'DESC'} LIMIT 1"
+                    ).fetchone()
+                if prev is not None:
+                    prev_sc = float(prev["local_score"])
+                    delta = (prev_sc - float(local_score)) if self.cfg.direction == "minimize" else (float(local_score) - prev_sc)
+                    if delta < self.cfg.min_hosted_improvement:
+                        msg = (
+                            f"Held by quota pacer: gain {delta:.6f} over last hosted submit ({prev_sc}) "
+                            f"is < min_hosted_improvement ({self.cfg.min_hosted_improvement})."
+                        )
+                        self.db.log_event("INFO", node_id or "hosted", msg)
+                        return {"ok": False, "submitted": False, "gated": True, "local_score": local_score, "error": msg}
 
         proc = await asyncio.create_subprocess_exec(
             "bash",
@@ -758,7 +775,7 @@ class EvalAndTreeService:
             stderr=asyncio.subprocess.STDOUT,
         )
         try:
-            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=180.0)
+            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=420.0)
         except asyncio.TimeoutError:
             proc.kill()
             return {"ok": False, "submitted": False, "error": "hosted_submit.sh timed out"}
@@ -771,7 +788,7 @@ class EvalAndTreeService:
 
         submitted = bool(parsed.get("submitted", False)) and proc.returncode == 0
         h_score = float(parsed["hosted_score"]) if parsed.get("hosted_score") is not None else None
-        status = "SUBMITTED" if submitted else "SKIPPED_OR_UNCONFIGURED"
+        status = "SUBMITTED" if submitted else ("CERTIFIED_OFFICIAL_METRIC" if h_score is not None else "SKIPPED_OR_UNCONFIGURED")
         self.db.record_hosted_submission(
             node_id=node_id,
             candidate_path=str(cpath),
