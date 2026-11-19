@@ -407,16 +407,20 @@ async def _cmd_agent_rpc(args: argparse.Namespace) -> int:
             "node_id": node_id,
             "candidate_path": str(Path(args.candidate).resolve()),
         }
-    elif sub == "propose":
+    elif sub in ("propose", "submit-hypothesis"):
         payload = {
             "action": "propose",
             "parent_id": args.parent_id or node_id,
             "island_id": args.island_id,
             "role": args.role,
             "title": args.title,
-            "hypothesis": args.hypothesis,
+            "hypothesis": getattr(args, "hypothesis", "") or "",
             "rationale": args.rationale,
             "novel_insight": getattr(args, "novel_insight", "") or "",
+            "target_files": getattr(args, "target_files", "") or "",
+            "exact_changes": getattr(args, "exact_changes", "") or "",
+            "verification_plan": getattr(args, "verification_plan", "") or "",
+            "require_spec": (sub == "submit-hypothesis"),
             "origin": getattr(args, "origin", "") or "",
             "target_slice": getattr(args, "target_slice", "") or "",
         }
@@ -508,7 +512,7 @@ async def _cmd_agent_rpc(args: argparse.Namespace) -> int:
     svc = EvalAndTreeService(cfg, db)
     if sub == "eval":
         res = await svc.run_local_eval(node_id=node_id, candidate_path=payload["candidate_path"])
-    elif sub == "propose":
+    elif sub in ("propose", "submit-hypothesis"):
         res = await svc.handle_propose(payload)
     elif sub == "directive":
         res = await svc.handle_directive(payload)
@@ -626,6 +630,9 @@ def build_parser() -> argparse.ArgumentParser:
     ag_prop = ag_sub.add_parser("propose")
     ag_prop.add_argument("--rationale", default="")
     ag_prop.add_argument("--novel-insight", default="")
+    ag_prop.add_argument("--target-files", default="")
+    ag_prop.add_argument("--exact-changes", default="")
+    ag_prop.add_argument("--verification-plan", default="")
     ag_prop.add_argument("--hypothesis", required=True)
     ag_prop.add_argument("--target-slice", default="")
     ag_prop.add_argument("--title", required=True)
@@ -635,6 +642,22 @@ def build_parser() -> argparse.ArgumentParser:
     ag_prop.add_argument("--island-id", type=int, default=None)
     ag_prop.add_argument("--workspace", default=None)
     ag_prop.add_argument("--node-id", default=None)
+
+    ag_shyp = ag_sub.add_parser("submit-hypothesis")
+    ag_shyp.add_argument("--rationale", required=True)
+    ag_shyp.add_argument("--novel-insight", required=True)
+    ag_shyp.add_argument("--target-files", required=True)
+    ag_shyp.add_argument("--exact-changes", required=True)
+    ag_shyp.add_argument("--verification-plan", required=True)
+    ag_shyp.add_argument("--target-slice", required=True)
+    ag_shyp.add_argument("--title", required=True)
+    ag_shyp.add_argument("--hypothesis", default="")
+    ag_shyp.add_argument("--role", default="IMPLEMENT")
+    ag_shyp.add_argument("--origin", default="")
+    ag_shyp.add_argument("--parent-id", default=None)
+    ag_shyp.add_argument("--island-id", type=int, default=None)
+    ag_shyp.add_argument("--workspace", default=None)
+    ag_shyp.add_argument("--node-id", default=None)
 
     ag_dir = ag_sub.add_parser("directive")
     ag_dir.add_argument("--directive", required=True)

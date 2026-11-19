@@ -96,6 +96,7 @@ class SwarmDB:
                     seed_score REAL,
                     target_slice TEXT DEFAULT '',
                     novel_insight TEXT DEFAULT '',
+                    execution_spec_json TEXT DEFAULT '{}',
                     origin TEXT DEFAULT 'researcher',
                     novelty_score REAL DEFAULT 1.0,
                     title TEXT NOT NULL,
@@ -192,6 +193,8 @@ class SwarmDB:
                 conn.execute("ALTER TABLE nodes ADD COLUMN target_slice TEXT DEFAULT ''")
             if "novel_insight" not in cols:
                 conn.execute("ALTER TABLE nodes ADD COLUMN novel_insight TEXT DEFAULT ''")
+            if "execution_spec_json" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN execution_spec_json TEXT DEFAULT '{}'")
             if "origin" not in cols:
                 conn.execute("ALTER TABLE nodes ADD COLUMN origin TEXT DEFAULT 'researcher'")
             if "novelty_score" not in cols:
@@ -451,6 +454,7 @@ class SwarmDB:
         hypothesis: str = "",
         rationale: str = "",
         novel_insight: str = "",
+        execution_spec: dict[str, Any] | None = None,
         origin: str = "researcher",
         parent_id: str | None = None,
         secondary_parent_id: str | None = None,
@@ -511,6 +515,7 @@ class SwarmDB:
                     )
                     return nid, False, f"Duplicate of {dup_id} (similarity={sim})"
 
+            spec_json = json.dumps(execution_spec or {})[:12000]
             nid = self.new_node_id("n")
             with self._connect() as conn:
                 conn.execute(
@@ -518,14 +523,14 @@ class SwarmDB:
                     INSERT INTO nodes(
                         node_id, parent_id, secondary_parent_id, island_id, role, status,
                         depth, debug_depth, deepen_depth, seed_score, target_slice,
-                        novel_insight, origin, novelty_score,
+                        novel_insight, execution_spec_json, origin, novelty_score,
                         title, hypothesis, rationale, candidate_path, created_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         nid, parent_id, secondary_parent_id, island_id, role, status,
                         depth, debug_depth, deepen_depth, seed_score, target_slice[:240],
-                        novel_insight[:3000], origin[:40], computed_novelty,
+                        novel_insight[:3000], spec_json, origin[:40], computed_novelty,
                         title[:200], hypothesis[:4000], rationale[:4000],
                         candidate_path, time.time(),
                     ),
