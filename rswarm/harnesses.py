@@ -276,31 +276,49 @@ export RSWARM_SOCK={shlex.quote(str(self.workspace_dir / 'state' / 'rswarm.sock'
 
 cd {shlex.quote(str(workdir))}
 SESSION_ID={shlex.quote(session_uuid)}
-if compgen -G "$HOME/.claude/projects/*/${{SESSION_ID}}.jsonl" >/dev/null 2>&1; then
-  printf '=== [claude-mux RESUME] node=%s window=%s model=%s session=%s ===\\n' {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(model_id)} "$SESSION_ID"
-  exec nice -n 15 claude \\
-    --resume "$SESSION_ID" \\
-    --model {shlex.quote(model_id)} \\
-    --effort {shlex.quote(cli_effort)} \\
-    --dangerously-skip-permissions \\
-    --setting-sources "" \\
-    --strict-mcp-config \\
-    --mcp-config '{{"mcpServers":{{}}}}' \\
-    --append-system-prompt-file {shlex.quote(str(sys_file))} \\
-    -p "$(cat {shlex.quote(str(resume_file))})"
-else
-  printf '=== [claude-mux] node=%s window=%s model=%s session=%s ===\\n' {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(model_id)} "$SESSION_ID"
-  exec nice -n 15 claude \\
-    --session-id "$SESSION_ID" \\
-    --model {shlex.quote(model_id)} \\
-    --effort {shlex.quote(cli_effort)} \\
-    --dangerously-skip-permissions \\
-    --setting-sources "" \\
-    --strict-mcp-config \\
-    --mcp-config '{{"mcpServers":{{}}}}' \\
-    --append-system-prompt-file {shlex.quote(str(sys_file))} \\
-    -p "$(cat {shlex.quote(str(prompt_file))})"
-fi
+RC=1
+for ATTEMPT in $(seq 1 15); do
+  OUT_TMP=".rswarm_cli_try.log"
+  if compgen -G "$HOME/.claude/projects/*/${{SESSION_ID}}.jsonl" >/dev/null 2>&1; then
+    printf '=== [claude-mux RESUME try=%s] node=%s window=%s model=%s session=%s ===\\n' "$ATTEMPT" {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(model_id)} "$SESSION_ID"
+    nice -n 15 claude \\
+      --resume "$SESSION_ID" \\
+      --model {shlex.quote(model_id)} \\
+      --effort {shlex.quote(cli_effort)} \\
+      --dangerously-skip-permissions \\
+      --setting-sources "" \\
+      --strict-mcp-config \\
+      --mcp-config '{{"mcpServers":{{}}}}' \\
+      --append-system-prompt-file {shlex.quote(str(sys_file))} \\
+      -p "$(cat {shlex.quote(str(resume_file))})" 2>&1 | tee "$OUT_TMP"
+    RC=${{PIPESTATUS[0]}}
+  else
+    printf '=== [claude-mux try=%s] node=%s window=%s model=%s session=%s ===\\n' "$ATTEMPT" {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(model_id)} "$SESSION_ID"
+    nice -n 15 claude \\
+      --session-id "$SESSION_ID" \\
+      --model {shlex.quote(model_id)} \\
+      --effort {shlex.quote(cli_effort)} \\
+      --dangerously-skip-permissions \\
+      --setting-sources "" \\
+      --strict-mcp-config \\
+      --mcp-config '{{"mcpServers":{{}}}}' \\
+      --append-system-prompt-file {shlex.quote(str(sys_file))} \\
+      -p "$(cat {shlex.quote(str(prompt_file))})" 2>&1 | tee "$OUT_TMP"
+    RC=${{PIPESTATUS[0]}}
+  fi
+  if [ "$RC" -eq 0 ]; then
+    rm -f "$OUT_TMP"
+    exit 0
+  fi
+  if grep -qiE "temporarily limiting requests|rate.limit|overloaded|529|503|502|timed out" "$OUT_TMP" 2>/dev/null; then
+    printf '[CLI RETRY attempt=%s] Rate-limited or busy; sleeping 25s and continuing...\\n' "$ATTEMPT"
+    sleep 25
+    continue
+  fi
+  rm -f "$OUT_TMP"
+  exit "$RC"
+done
+exit "$RC"
 """
         script_file.write_text(script_body)
         script_file.chmod(0o700)
