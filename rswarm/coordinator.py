@@ -554,10 +554,10 @@ CRITICAL FRONTIER RULE: Do NOT regress into generic textbook heuristics (blind r
                     "WHERE role='EXPLORE' AND status IN ('QUEUED','RUNNING') GROUP BY island_id"
                 ).fetchall()
             }
-            builder_supply = int(
+            imp_supply = int(
                 conn.execute(
                     "SELECT COUNT(*) AS c FROM nodes "
-                    "WHERE role IN ('IMPLEMENT','DEEPEN','CROSSOVER','DEBUG') AND status IN ('QUEUED','RUNNING')"
+                    "WHERE role='IMPLEMENT' AND status IN ('QUEUED','RUNNING')"
                 ).fetchone()["c"]
                 or 0
             )
@@ -584,10 +584,10 @@ CRITICAL FRONTIER RULE: Do NOT regress into generic textbook heuristics (blind r
                     novelty_threshold=None,
                 )
 
-        # 2. Only inject minimal emergency fallback IMPLEMENT nodes (`origin='auto_replenish'`, lowest priority=5.0)
-        # when total builder supply falls below half concurrency (e.g. while EXPLORE models cool down).
-        min_builder_floor = max(2, self.cfg.concurrency // 2)
-        need_fallback = max(0, min_builder_floor - builder_supply)
+        # 2. Keep IMPLEMENT supply >= non-reserved slots so unthrottled builders never idle when DEEPEN/EXPLORE cool down!
+        eff_reserve = min(max(0, int(self.cfg.reserved_frontier_slots)), max(0, self.cfg.concurrency - 1)) if self.cfg.concurrency >= 4 else 0
+        min_imp_floor = max(2, self.cfg.concurrency - eff_reserve)
+        need_fallback = max(0, min_imp_floor - imp_supply)
         for _ in range(need_fallback):
             isl = islands[self._island_rr % len(islands)]
             self._island_rr += 1
@@ -1016,11 +1016,17 @@ CRITICAL FRONTIER RULE: Do NOT regress into generic textbook heuristics (blind r
                         if eff_reserve > 0 and active_imp >= (self.cfg.concurrency - eff_reserve):
                             excl_set.add("IMPLEMENT")
 
-                        # Skip roles whose routed model is currently in rate-limit cooldown so unthrottled models keep slots busy!
+                        # Skip roles whose routed model is in rate-limit cooldown OR whose claude-* OAuth concurrency cap (2) is full!
                         now_m = time.time()
+                        active_claude_oauth = sum(
+                            1 for r_act in self.active_roles.values()
+                            if self.cfg.model_and_effort_for_role(r_act)[0].lower().startswith("claude-")
+                        )
                         for r_cand in ("META", "DEBUG", "IMPLEMENT", "DEEPEN", "EXPLORE", "CROSSOVER"):
                             m_id, _ = self.cfg.model_and_effort_for_role(r_cand)
                             if now_m < self._model_cooldown_until.get(m_id, 0.0):
+                                excl_set.add(r_cand)
+                            elif m_id.lower().startswith("claude-") and active_claude_oauth >= 2:
                                 excl_set.add(r_cand)
 
                         next_node = self.db.claim_next_queued_node(
