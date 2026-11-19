@@ -938,18 +938,25 @@ class SwarmDB:
             p_rad = float(parent.get("radius_norm", 0.0)) if parent else 0.0
             sp = float(n.get("speedup") or 0.0)
             gp = float(n.get("goal_progress") or 0.0)
+            has_target = meta.get("leaderboard_target") is not None
             if n.get("valid") and sp > 1.000001:
-                # Map speedup & goal progress onto [0.12 .. 1.25] (1.0 = Leaderboard Target Ring!)
-                if meta.get("leaderboard_target") is not None and gp > 0:
-                    metric_r = 0.10 + 0.90 * gp
+                if has_target and gp > 0:
+                    if gp < 1.0:
+                        # Strictly inside the 1.00 Goal Ring whenever score has not yet beaten Goal!
+                        curved = gp ** 0.78
+                        metric_r = 0.10 + 0.88 * curved
+                        n["radius_norm"] = round(min(0.975, max(min(p_rad + 0.015, 0.96), metric_r)), 4)
+                    else:
+                        metric_r = 1.0 + 0.22 * math.tanh(gp - 1.0)
+                        n["radius_norm"] = round(max(1.0, min(metric_r, 1.24)), 4)
                 else:
                     denom = max(0.05, math.log(max_speedup))
-                    metric_r = 0.12 + 0.88 * (math.log(sp) / denom)
-                n["radius_norm"] = round(max(p_rad + 0.045, min(metric_r, 1.35)), 4)
+                    metric_r = 0.12 + 0.86 * (math.log(sp) / denom)
+                    n["radius_norm"] = round(max(p_rad + 0.025, min(metric_r, 1.22)), 4)
             else:
-                # Exploratory / running / obstructed twigs extend slightly from parent so lineage stays visible.
-                step = 0.075 if n["status"] == "RUNNING" else (0.055 if n["role"] == "EXPLORE" else 0.04)
-                n["radius_norm"] = round(min(1.30, max(0.06, p_rad + step)), 4)
+                step = 0.045 if n["status"] == "RUNNING" else (0.035 if n["role"] == "EXPLORE" else 0.025)
+                cap = 0.95 if has_target else 1.18
+                n["radius_norm"] = round(min(cap, max(0.08, p_rad + step)), 4)
 
         return {
             "meta": meta,
