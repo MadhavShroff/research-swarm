@@ -314,6 +314,75 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     .mobile-sheet, .mobile-sheet.open { display: none; }
   }
 
+  /* High-Level Live Research Pulse Narrative Log on the Graph Page */
+  .pulse-dock {
+    position: absolute; left: 12px; bottom: 56px; z-index: 12;
+    width: min(445px, calc(100% - 82px));
+    background: rgba(9, 13, 23, 0.90);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-card);
+    backdrop-filter: blur(14px);
+    overflow: hidden;
+    transition: opacity 0.16s ease, transform 0.16s ease;
+  }
+  .mobile-sheet.open ~ .pulse-dock { opacity: 0; pointer-events: none; transform: translateY(6px); }
+  .pulse-hdr {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .pulse-dock.collapsed .pulse-hdr { border-bottom: none; }
+  .pulse-hdr-left { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
+  .pulse-live-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    background: var(--win);
+    box-shadow: 0 0 8px rgba(52, 211, 153, 0.85);
+    animation: pulseGlow 1.9s ease-in-out infinite;
+  }
+  @keyframes pulseGlow { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.84); } }
+  .pulse-title { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text); white-space: nowrap; }
+  .pulse-latest-preview {
+    display: none; font-size: 11px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1;
+  }
+  .pulse-dock.collapsed .pulse-latest-preview { display: block; }
+  .pulse-toggle {
+    min-height: 26px; padding: 3px 8px; border-radius: 7px;
+    font-size: 10.5px; font-weight: 600; color: var(--muted);
+    background: rgba(255, 255, 255, 0.05); border: 1px solid transparent; cursor: pointer;
+    flex-shrink: 0;
+  }
+  .pulse-toggle:hover { color: var(--text); border-color: var(--border); }
+  .pulse-list {
+    max-height: 178px; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    padding: 6px 8px; display: flex; flex-direction: column; gap: 5px;
+  }
+  .pulse-dock.collapsed .pulse-list { display: none; }
+  .pulse-item {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 6px 8px; border-radius: 8px;
+    background: rgba(15, 23, 42, 0.56);
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    font-size: 11.5px; line-height: 1.38; color: #cbd5e1;
+    cursor: pointer;
+    transition: background-color 0.12s ease, border-color 0.12s ease;
+  }
+  .pulse-item:hover { background-color: rgba(24, 36, 62, 0.78); border-color: var(--border-bright); }
+  .pulse-tag {
+    font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 2px 5px; border-radius: 5px; flex-shrink: 0; margin-top: 1px;
+  }
+  .pulse-tag.WIN { background: rgba(52, 211, 153, 0.18); color: #34d399; }
+  .pulse-tag.PROMISING { background: rgba(56, 189, 248, 0.18); color: #38bdf8; }
+  .pulse-tag.PIVOT { background: rgba(251, 191, 36, 0.18); color: #fbbf24; }
+  .pulse-tag.DEAD_END { background: rgba(148, 163, 184, 0.18); color: #94a3b8; }
+  .pulse-tag.LIVE { background: rgba(192, 132, 252, 0.18); color: #c084fc; }
+  .pulse-msg { flex: 1; min-width: 0; }
+  .pulse-msg b { color: var(--text); font-weight: 600; }
+  .pulse-ts { font-size: 10px; color: var(--dim); flex-shrink: 0; white-space: nowrap; margin-top: 1px; }
+
   /* Inspector Drawer */
   .inspector-body {
     flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
@@ -460,6 +529,17 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
 
     <div class="mobile-sheet" id="mobileSheet"></div>
+    <section class="pulse-dock" id="pulseDock" aria-label="High-level research log">
+      <div class="pulse-hdr" id="pulseHdr">
+        <div class="pulse-hdr-left">
+          <span class="pulse-live-dot"></span>
+          <span class="pulse-title">Research Pulse</span>
+          <span class="pulse-latest-preview" id="pulsePreview">Loading live research story…</span>
+        </div>
+        <button class="pulse-toggle" id="btnTogglePulse" type="button">Hide</button>
+      </div>
+      <div class="pulse-list" id="pulseList"></div>
+    </section>
     <div class="hud-legend" id="islandLegend"></div>
   </main>
 
@@ -633,6 +713,7 @@ function renderAll() {
 
   renderRadialSvg(d, islMap);
   renderDiaryList(d);
+  renderResearchPulse(d, islMap);
 }
 
 function renderRadialSvg(d, islMap) {
@@ -936,6 +1017,105 @@ function findNearestNodeAtClient(clientX, clientY, isTouch) {
     }
   }
   return best;
+}
+
+function buildResearchPulse(d, islMap) {
+  const items = [];
+  const seen = new Set();
+  const nodes = d.nodes || [];
+  const runningPromising = nodes
+    .filter(n => n.status === 'RUNNING' && n.origin !== 'auto_replenish' && n.role !== 'BASELINE')
+    .sort((a, b) => Number(b.started_at || b.created_at || 0) - Number(a.started_at || a.created_at || 0));
+  const nextPivotTitle = runningPromising[0]?.title || 'the next frontier direction';
+
+  const pushItem = (key, tag, label, text, ts, nid) => {
+    if (!text || seen.has(key)) return;
+    seen.add(key);
+    items.push({ tag, label, text, ts: Number(ts || 0), nid: nid || '' });
+  };
+
+  // 1. Official hosted / Kaggle certifications
+  for (const hs of (d.hosted_submissions || []).slice(0, 3)) {
+    if (hs.hosted_score != null) {
+      const st = hs.status === 'SUBMITTED' ? 'Kaggle submitted & verified' : 'Official evaluator certified';
+      pushItem(`hs-${hs.sub_id}`, 'WIN', 'Verified', `${st} score <b>${Number(hs.hosted_score).toFixed(6)}</b>`, hs.created_at, hs.node_id);
+    }
+  }
+
+  // 2. Active high-signal frontier work (promising novel directions & cross-disciplinary explorers)
+  for (const n of runningPromising.slice(0, 4)) {
+    const islName = islMap.get(Number(n.island_id))?.name || 'frontier';
+    const mTag = shortModelTag(n.model_used, n.effort_used);
+    if (n.role === 'IMPLEMENT' || n.role === 'DEEPEN') {
+      const ins = (n.novel_insight || '').trim();
+      const shortIns = ins ? ` — ${ins.slice(0, 88)}${ins.length > 88 ? '…' : ''}` : '';
+      pushItem(
+        `run-${n.node_id}`,
+        'PROMISING',
+        'Promising',
+        `Found a promising direction: <b>${escapeHtml(n.title)}</b>${escapeHtml(shortIns)}`,
+        n.started_at || n.created_at,
+        n.node_id
+      );
+    } else {
+      pushItem(
+        `run-${n.node_id}`,
+        'LIVE',
+        n.role === 'META' ? 'Strategy' : 'Exploring',
+        `Exploring <b>${escapeHtml(islName)}</b> (${escapeHtml(mTag || n.role)}): ${escapeHtml(n.title)}`,
+        n.started_at || n.created_at,
+        n.node_id
+      );
+    }
+  }
+
+  // 3. Breakthroughs, new paradigm islands, promising proposals, and dead-end pivots from Diary
+  for (const e of (d.diary || []).slice(0, 45)) {
+    const cleanTitle = String(e.title || '').replace(/^\[[A-Z_]+\]\s*/, '').replace(/^No gain:\s*/i, '').replace(/^\[SPEC_DRIFT:[^\]]+\]\s*/, '');
+    if (e.entry_type === 'BREAKTHROUGH') {
+      const sc = e.score != null ? ` to <b>${Number(e.score).toFixed(6)}</b>` : '';
+      const sp = e.speedup ? ` (${Number(e.speedup).toFixed(4)}x)` : '';
+      pushItem(`d-${e.entry_id}`, 'WIN', 'Breakthrough', `Breakthrough: <b>${escapeHtml(cleanTitle)}</b> lowered score${sc}${sp}`, e.created_at, e.node_id);
+    } else if (e.entry_type === 'STRATEGY') {
+      if (cleanTitle.toLowerCase().includes('new research island')) {
+        const focusLine = String(e.body || '').split('\n')[0].replace(/^Focus:\s*/i, '').slice(0, 92);
+        pushItem(`d-${e.entry_id}`, 'PIVOT', 'New Domain', `Pivoting to new paradigm: <b>${escapeHtml(cleanTitle)}</b> — ${escapeHtml(focusLine)}`, e.created_at, e.node_id);
+      } else {
+        const firstLine = String(e.body || '').replace(/\s+/g, ' ').slice(0, 108);
+        pushItem(`d-${e.entry_id}`, 'PIVOT', 'Pivot', `Strategy pivot: ${escapeHtml(firstLine)}${firstLine.length >= 108 ? '…' : ''}`, e.created_at, e.node_id);
+      }
+    } else if (e.entry_type === 'HYPOTHESIS') {
+      const niMatch = String(e.body || '').match(/Novel Insight:\s*([^\n]+)/i);
+      const snippet = niMatch ? ` — ${niMatch[1].slice(0, 82)}…` : '';
+      pushItem(`d-${e.entry_id}`, 'PROMISING', 'Direction', `Found a promising direction: <b>${escapeHtml(cleanTitle)}</b>${escapeHtml(snippet)}`, e.created_at, e.node_id);
+    } else if (e.entry_type === 'OBSTRUCTION') {
+      pushItem(`d-${e.entry_id}`, 'DEAD_END', 'Dead End', `Hit a dead end on <b>${escapeHtml(cleanTitle)}</b> — pivoting to <b>${escapeHtml(nextPivotTitle)}</b>`, e.created_at, e.node_id);
+    }
+  }
+
+  items.sort((a, b) => b.ts - a.ts);
+  return items.slice(0, 22);
+}
+
+function renderResearchPulse(d, islMap) {
+  const listEl = document.getElementById('pulseList');
+  const prevEl = document.getElementById('pulsePreview');
+  if (!listEl || !prevEl) return;
+  const items = buildResearchPulse(d, islMap);
+  if (!items.length) {
+    prevEl.textContent = 'Swarm initializing…';
+    listEl.innerHTML = '<div class="pulse-item"><span class="pulse-tag LIVE">Live</span><span class="pulse-msg">Swarm is warming up and preparing its first frontier wave.</span></div>';
+    return;
+  }
+  prevEl.innerHTML = items[0].text;
+  listEl.innerHTML = items.map(it => {
+    const tStr = it.ts ? new Date(it.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    return `<div class="pulse-item" data-nid="${escapeHtml(it.nid)}">
+      <span class="pulse-tag ${it.tag}">${escapeHtml(it.label)}</span>
+      <span class="pulse-msg">${it.text}</span>
+      <span class="pulse-ts">${escapeHtml(tStr)}</span>
+    </div>`;
+  }).join('');
 }
 
 function renderDiaryList(d) {
@@ -1380,6 +1560,21 @@ document.getElementById('btnBackToGraph').addEventListener('click', () => switch
 document.getElementById('diaryList').addEventListener('click', e => {
   const card = e.target.closest('.diary-card');
   if (card && card.dataset.nid) selectNode(card.dataset.nid, { openInspectorDrawer: window.innerWidth <= 1180 });
+});
+const pulseDockEl = document.getElementById('pulseDock');
+const btnTogglePulse = document.getElementById('btnTogglePulse');
+if (window.innerWidth <= 760 && pulseDockEl) {
+  pulseDockEl.classList.add('collapsed');
+  if (btnTogglePulse) btnTogglePulse.textContent = 'Show';
+}
+document.getElementById('pulseHdr')?.addEventListener('click', () => {
+  if (!pulseDockEl) return;
+  const col = pulseDockEl.classList.toggle('collapsed');
+  if (btnTogglePulse) btnTogglePulse.textContent = col ? 'Show' : 'Hide';
+});
+document.getElementById('pulseList')?.addEventListener('click', e => {
+  const row = e.target.closest('.pulse-item');
+  if (row && row.dataset.nid) selectNode(row.dataset.nid);
 });
 document.getElementById('diaryFilters').addEventListener('click', e => {
   const btn = e.target.closest('.pill');
