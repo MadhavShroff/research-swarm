@@ -333,7 +333,20 @@ class SwarmCoordinator:
         )
 
         lb1 = stats.get("leaderboard_number_one")
-        lb1_line = f"- Public Leaderboard #1 Score: `{lb1}` (Top-5 auto-submit gate: `{stats.get('leaderboard_submit_threshold')}`)\n" if lb1 is not None else ""
+        best_sc_val = stats.get("best_score")
+        tgt_val = stats.get("leaderboard_target")
+        stretch_line = ""
+        if best_sc_val is not None:
+            step = max(0.05, 0.004 * abs(float(best_sc_val)))
+            if self.cfg.direction == "minimize":
+                stretch_goal = round(min(float(tgt_val) if tgt_val is not None else float(best_sc_val), float(best_sc_val)) - step, 6)
+            else:
+                stretch_goal = round(max(float(tgt_val) if tgt_val is not None else float(best_sc_val), float(best_sc_val)) + step, 6)
+            stretch_line = (
+                f"- **Open-Ended World-Record Stretch Horizon**: `{stretch_goal}` "
+                f"(NEVER stop, slow down, or treat Leaderboard #1 `{lb1 or tgt_val}` as a ceiling—keep finding structural leaps past #1 indefinitely!)\n"
+            )
+        lb1_line = f"- Public Leaderboard #1 Score: `{lb1}` (Top-5 auto-submit gate: `{stats.get('leaderboard_submit_threshold')}`)\n{stretch_line}" if lb1 is not None else stretch_line
         solvers_root = self.ws / "vault" / "solvers"
         solver_dirs = sorted([d.name for d in solvers_root.iterdir() if d.is_dir()])[-8:] if solvers_root.is_dir() else []
         solvers_hint = (

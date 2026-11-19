@@ -229,6 +229,7 @@ class SwarmConfig:
     stall_evals_for_meta: int = 12
     novelty_threshold: float = 0.72
     hosted_quota_per_day: int = 5
+    min_hosted_improvement: float = 0.005
     auto_hosted_on_sota: bool = False
     agent_timeout_sec: int = 1200
     http_timeout_sec: int = 1200

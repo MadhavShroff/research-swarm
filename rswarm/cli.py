@@ -488,6 +488,7 @@ async def _cmd_agent_rpc(args: argparse.Namespace) -> int:
             "node_id": node_id,
             "candidate_path": str(Path(args.candidate).resolve()),
             "note": args.note,
+            "force": bool(getattr(args, "force", False)),
         }
     else:
         raise ValueError(f"Unknown agent subcommand: {sub}")
@@ -674,6 +675,7 @@ def build_parser() -> argparse.ArgumentParser:
     ag_host = ag_sub.add_parser("hosted-submit")
     ag_host.add_argument("candidate")
     ag_host.add_argument("--note", default="rswarm submission")
+    ag_host.add_argument("--force", action="store_true", help="Run official hosted evaluator/submitter immediately, bypassing threshold gate.")
     ag_host.add_argument("--workspace", default=None)
     ag_host.add_argument("--node-id", default=None)
 
