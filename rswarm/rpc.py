@@ -420,18 +420,25 @@ class EvalAndTreeService:
             self.db.create_node(
                 island_id=new_iid,
                 role="EXPLORE",
-                title=f"Literature-grounded frontier on {res['name']}",
-                hypothesis=f"Search papers (`swarm-search`) and propose 2-3 high-leverage constructions along new paradigm `{res['name']}`: {focus[:300]}",
-                rationale=f"Seed new Research Island #{new_iid} created by {node_id or 'META'}.",
+                title=f"Invent novel frontier leaps on {res['name']}",
+                hypothesis=(
+                    f"Map where online/published methods plateau on `{res['name']}` ({focus[:260]}), "
+                    f"identify the hidden assumption blocking them, and propose 2-3 genuinely novel mathematical leaps."
+                ),
+                novel_insight=focus[:500],
+                origin="meta",
+                rationale=f"Seed novel first-principles Research Island #{new_iid} created by {node_id or 'META'}.",
                 parent_id=best_nid,
                 novelty_threshold=None,
             )
             self.db.create_node(
                 island_id=new_iid,
                 role="IMPLEMENT",
-                title=f"Initial {res['name']} paradigm builder",
-                hypothesis=f"IDEAL BOUND: Attack remaining gap via new island `{res['name']}`. MECHANISM: {focus[:500]}",
-                rationale=f"Immediate builder dispatch on newly spawned Island #{new_iid}.",
+                title=f"Novel paradigm builder on {res['name']}",
+                hypothesis=f"Build and test the novel mathematical mechanism defining Island `{res['name']}`: {focus[:500]}",
+                novel_insight=focus[:500],
+                origin="meta",
+                rationale=f"Immediate novel-mechanism builder dispatch on newly spawned Island #{new_iid}.",
                 parent_id=best_nid,
                 novelty_threshold=None,
             )
@@ -445,7 +452,10 @@ class EvalAndTreeService:
         title = str(req.get("title") or "Untitled Hypothesis").strip()
         hypothesis = str(req.get("hypothesis") or "").strip()
         rationale = str(req.get("rationale") or "").strip()
+        novel_insight = str(req.get("novel_insight") or "").strip()
         target_slice = str(req.get("target_slice") or "").strip()
+        default_origin = "meta" if (parent and str(parent.get("role") or "").upper() == "META") else "researcher"
+        origin = str(req.get("origin") or default_origin).strip() or default_origin
         role = str(req.get("role") or "IMPLEMENT").upper()
         if role not in ("IMPLEMENT", "EXPLORE", "DEEPEN", "CROSSOVER"):
             role = "IMPLEMENT"
@@ -456,22 +466,28 @@ class EvalAndTreeService:
             title=title,
             hypothesis=hypothesis,
             rationale=rationale,
+            novel_insight=novel_insight,
+            origin=origin,
             parent_id=parent_id,
             target_slice=target_slice,
             novelty_threshold=self.cfg.novelty_threshold,
+            literature_dir=self.ws / "shared" / "literature",
         )
+        created_node = self.db.get_node(nid) if accepted else None
+        nov_sc = created_node.get("novelty_score") if created_node else None
         if accepted:
+            insight_line = f"Novel Insight: {novel_insight}\n" if novel_insight else ""
             self.db.add_diary(
                 "HYPOTHESIS",
                 f"[{role}] {title}",
-                f"Parent: {parent_id}\nHypothesis: {hypothesis}\nRationale: {rationale}",
+                f"Parent: {parent_id} (novelty={nov_sc})\n{insight_line}Hypothesis: {hypothesis}\nRationale: {rationale}",
                 node_id=nid,
                 island_id=island_id,
             )
-            self.db.log_event("PROPOSE", nid, f"Queued {role} on island {island_id}: {title}")
+            self.db.log_event("PROPOSE", nid, f"Queued {role} on island {island_id} (novelty={nov_sc}): {title}")
         else:
             self.db.log_event("NOVELTY", nid, f"Filtered duplicate proposal: {title} ({msg})")
-        return {"ok": True, "accepted": accepted, "child_node_id": nid, "message": msg}
+        return {"ok": True, "accepted": accepted, "child_node_id": nid, "novelty_score": nov_sc, "message": msg}
 
     async def handle_submit(self, req: dict[str, Any]) -> dict[str, Any]:
         node_id = str(req.get("node_id") or "").strip()
@@ -568,8 +584,10 @@ class EvalAndTreeService:
                     island_id=island_id,
                     role="DEEPEN",
                     title=f"Deepen & scale {clean_title[:96]}",
-                    hypothesis=f"Push algorithmic/numerical exploitation of winning mechanism in {node_id}: {summary[:400]}",
-                    rationale=f"Parent {node_id} reached {eval_res['speedup_vs_baseline']:.4f}x ({eval_res['score']}). Extract second-order gains.",
+                    hypothesis=f"Compound and generalize the winning novel mechanism in {node_id} across remaining unsolved regimes: {summary[:400]}",
+                    novel_insight=str(node.get("novel_insight") or ""),
+                    origin="deepen",
+                    rationale=f"Parent {node_id} reached {eval_res['speedup_vs_baseline']:.4f}x ({eval_res['score']}). Push the novel mechanism beyond local tweaks.",
                     parent_id=node_id,
                     deepen_depth=cur_deep_depth + 1,
                     target_slice=str(node.get("target_slice") or ""),
@@ -582,9 +600,13 @@ class EvalAndTreeService:
                 exp_id, ok2, _ = self.db.create_node(
                     island_id=island_id,
                     role="EXPLORE",
-                    title=f"Branch new frontier from {node_id}",
-                    hypothesis=f"Invent 2-3 orthogonal structural leaps atop {node_id} ({eval_res['speedup_vs_baseline']:.4f}x).",
-                    rationale="Multiply winning lineage into distinct sub-directions.",
+                    title=f"Branch novel frontier from {node_id}",
+                    hypothesis=(
+                        f"Identify what still limits {node_id} ({eval_res['speedup_vs_baseline']:.4f}x) and online/published methods, "
+                        f"then invent 2-3 genuinely novel mathematical insights and mechanisms."
+                    ),
+                    origin="researcher",
+                    rationale="Advance the frontier via original first-principles leaps beyond known methods.",
                     parent_id=node_id,
                     novelty_threshold=None,
                 )

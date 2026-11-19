@@ -416,6 +416,8 @@ async def _cmd_agent_rpc(args: argparse.Namespace) -> int:
             "title": args.title,
             "hypothesis": args.hypothesis,
             "rationale": args.rationale,
+            "novel_insight": getattr(args, "novel_insight", "") or "",
+            "origin": getattr(args, "origin", "") or "",
             "target_slice": getattr(args, "target_slice", "") or "",
         }
     elif sub == "directive":
@@ -622,11 +624,13 @@ def build_parser() -> argparse.ArgumentParser:
     ag_eval.add_argument("--node-id", default=None)
 
     ag_prop = ag_sub.add_parser("propose")
-    ag_prop.add_argument("--title", required=True)
-    ag_prop.add_argument("--hypothesis", required=True)
     ag_prop.add_argument("--rationale", default="")
-    ag_prop.add_argument("--role", default="IMPLEMENT")
+    ag_prop.add_argument("--novel-insight", default="")
+    ag_prop.add_argument("--hypothesis", required=True)
     ag_prop.add_argument("--target-slice", default="")
+    ag_prop.add_argument("--title", required=True)
+    ag_prop.add_argument("--role", default="IMPLEMENT")
+    ag_prop.add_argument("--origin", default="")
     ag_prop.add_argument("--parent-id", default=None)
     ag_prop.add_argument("--island-id", type=int, default=None)
     ag_prop.add_argument("--workspace", default=None)

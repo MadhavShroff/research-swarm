@@ -122,17 +122,38 @@ MUX_LITE_TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_literature",
         "description": (
-            "Search academic research papers (OpenAlex, Semantic Scholar, Crossref), "
-            "MathOverflow/Math.StackExchange proofs, GitHub repositories, and Wikipedia."
+            "Map prior art across academic papers (OpenAlex, Semantic Scholar, Crossref), "
+            "MathOverflow/Math.StackExchange proofs, GitHub, and Wikipedia to diagnose where known methods stop "
+            "and which hidden assumptions to break (known methods alone cannot advance the frontier)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Research query (e.g. 'packing unit squares in a square side below integer')."},
+                "query": {"type": "string", "description": "Prior-art boundary query (e.g. 'lower bound obstruction unit squares packing')."},
                 "source": {"type": "string", "description": "all | papers | mathoverflow | github | wiki (default: all)."},
                 "limit": {"type": "integer", "description": "Results per source (default 6)."},
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "propose_hypothesis",
+        "description": (
+            "Propose a genuinely novel frontier hypothesis (beyond online/textbook methods) into the multiplying research tree. "
+            "Ordered reasoning -> novel_insight -> hypothesis -> target_slice -> title."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rationale": {"type": "string", "description": "First-principles derivation of why known/online methods plateau on this slice."},
+                "novel_insight": {"type": "string", "description": "Exact hidden assumption broken + original mathematical structure, invariant, or operator invented."},
+                "hypothesis": {"type": "string", "description": "Concrete falsifiable mathematical formulation and C++/CUDA/Python algorithm to build."},
+                "target_slice": {"type": "string", "description": "Target unsolved regime or scale band."},
+                "title": {"type": "string", "description": "Concise 4-8 word novel mechanism title."},
+                "island_id": {"type": "integer", "description": "Optional target island ID."},
+                "role": {"type": "string", "description": "Target role (default: IMPLEMENT)."},
+            },
+            "required": ["rationale", "novel_insight", "hypothesis", "title"],
         },
     },
     {
@@ -749,6 +770,29 @@ exec nice -n 15 {rendered}
                     save_slug=str(inp.get("save_slug") or ""),
                 )
                 return json.dumps(res, indent=2)[:24000]
+
+            if name == "propose_hypothesis":
+                cmd_parts = [
+                    "swarm-propose",
+                    "--rationale", str(inp.get("rationale") or ""),
+                    "--novel-insight", str(inp.get("novel_insight") or ""),
+                    "--hypothesis", str(inp.get("hypothesis") or ""),
+                    "--target-slice", str(inp.get("target_slice") or ""),
+                    "--title", str(inp.get("title") or "Novel Hypothesis"),
+                    "--role", str(inp.get("role") or "IMPLEMENT"),
+                ]
+                if inp.get("island_id") is not None:
+                    cmd_parts.extend(["--island-id", str(int(inp["island_id"]))])
+                env = self._build_agent_env(node_id, workdir=workdir)
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd_parts,
+                    cwd=str(workdir),
+                    env=env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+                return out_b.decode("utf-8", errors="replace")[:8000]
 
             if name == "bash":
                 cmd = str(inp.get("command", "")).strip()

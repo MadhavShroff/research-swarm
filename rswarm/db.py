@@ -95,6 +95,9 @@ class SwarmDB:
                     deepen_depth INTEGER DEFAULT 0,
                     seed_score REAL,
                     target_slice TEXT DEFAULT '',
+                    novel_insight TEXT DEFAULT '',
+                    origin TEXT DEFAULT 'researcher',
+                    novelty_score REAL DEFAULT 1.0,
                     title TEXT NOT NULL,
                     hypothesis TEXT DEFAULT '',
                     rationale TEXT DEFAULT '',
@@ -187,6 +190,12 @@ class SwarmDB:
                 conn.execute("ALTER TABLE nodes ADD COLUMN seed_score REAL")
             if "target_slice" not in cols:
                 conn.execute("ALTER TABLE nodes ADD COLUMN target_slice TEXT DEFAULT ''")
+            if "novel_insight" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN novel_insight TEXT DEFAULT ''")
+            if "origin" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN origin TEXT DEFAULT 'researcher'")
+            if "novelty_score" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN novelty_score REAL DEFAULT 1.0")
             isl_cols = {r["name"] for r in conn.execute("PRAGMA table_info(islands)").fetchall()}
             if "consecutive_obstructions" not in isl_cols:
                 conn.execute("ALTER TABLE islands ADD COLUMN consecutive_obstructions INTEGER DEFAULT 0")
@@ -396,24 +405,42 @@ class SwarmDB:
         short_rand = uuid.uuid4().hex[:4]
         return f"{prefix}{cnt + 1:04d}_{short_rand}"
 
-    def check_novelty(self, title: str, hypothesis: str, threshold: float = 0.72) -> tuple[bool, str | None, float]:
-        """ShinkaEvolve pre-execution novelty gate: reject near-duplicate ideas before spawn."""
-        cand_tokens = _tokenize_idea(f"{title} {hypothesis}")
+    def check_novelty(
+        self,
+        title: str,
+        hypothesis: str,
+        threshold: float = 0.72,
+        novel_insight: str = "",
+        literature_dir: Path | None = None,
+    ) -> tuple[bool, str | None, float]:
+        """ShinkaEvolve pre-execution novelty gate: reject near-duplicate ideas and score distance from prior art."""
+        cand_tokens = _tokenize_idea(f"{title} {novel_insight} {hypothesis}")
         if len(cand_tokens) < 3:
             return True, None, 0.0
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                "SELECT node_id, title, hypothesis FROM nodes WHERE status != 'REJECTED_NOVELTY'"
+                "SELECT node_id, title, hypothesis, COALESCE(novel_insight, '') AS novel_insight "
+                "FROM nodes WHERE status NOT IN ('REJECTED_NOVELTY', 'ARCHIVED_STALE')"
             ).fetchall()
         best_sim = 0.0
         best_match: str | None = None
         for r in rows:
-            existing_tokens = _tokenize_idea(f"{r['title']} {r['hypothesis']}")
+            existing_tokens = _tokenize_idea(f"{r['title']} {r['novel_insight']} {r['hypothesis']}")
             sim = jaccard_similarity(cand_tokens, existing_tokens)
             if sim > best_sim:
                 best_sim = sim
                 best_match = r["node_id"]
-        return (best_sim < threshold, best_match, round(best_sim, 3))
+        # Also penalize pure copies of cached baseline literature summaries in novelty_score (without hard-blocking).
+        lit_sim = 0.0
+        if literature_dir is not None and literature_dir.is_dir():
+            for md_p in sorted(literature_dir.glob("*.md"))[:16]:
+                try:
+                    lit_tokens = _tokenize_idea(md_p.read_text(errors="replace")[:3500])
+                    lit_sim = max(lit_sim, jaccard_similarity(cand_tokens, lit_tokens))
+                except OSError:
+                    continue
+        effective_sim = max(best_sim, round(0.6 * lit_sim, 3))
+        return (best_sim < threshold, best_match, round(effective_sim, 3))
 
     def create_node(
         self,
@@ -423,6 +450,8 @@ class SwarmDB:
         title: str,
         hypothesis: str = "",
         rationale: str = "",
+        novel_insight: str = "",
+        origin: str = "researcher",
         parent_id: str | None = None,
         secondary_parent_id: str | None = None,
         status: str = "QUEUED",
@@ -432,6 +461,7 @@ class SwarmDB:
         seed_score: float | None = None,
         target_slice: str = "",
         novelty_threshold: float | None = None,
+        literature_dir: Path | None = None,
     ) -> tuple[str, bool, str]:
         """Insert a research tree node; runs novelty gate if novelty_threshold is provided."""
         with self._lock:
@@ -441,8 +471,16 @@ class SwarmDB:
                 if parent:
                     depth = int(parent["depth"]) + 1
 
+            computed_novelty = 0.25 if origin == "auto_replenish" else 1.0
             if novelty_threshold is not None and role in ("EXPLORE", "IMPLEMENT", "DEEPEN", "CROSSOVER"):
-                is_novel, dup_id, sim = self.check_novelty(title, hypothesis, novelty_threshold)
+                is_novel, dup_id, sim = self.check_novelty(
+                    title,
+                    hypothesis,
+                    novelty_threshold,
+                    novel_insight=novel_insight,
+                    literature_dir=literature_dir,
+                )
+                computed_novelty = round(max(0.0, 1.0 - sim), 3)
                 if not is_novel:
                     nid = self.new_node_id("dup")
                     with self._connect() as conn:
@@ -451,12 +489,14 @@ class SwarmDB:
                             INSERT INTO nodes(
                                 node_id, parent_id, secondary_parent_id, island_id, role, status,
                                 depth, debug_depth, deepen_depth, seed_score, target_slice,
+                                novel_insight, origin, novelty_score,
                                 title, hypothesis, rationale, diagnostics, created_at, finished_at
-                            ) VALUES(?, ?, ?, ?, ?, 'REJECTED_NOVELTY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ) VALUES(?, ?, ?, ?, ?, 'REJECTED_NOVELTY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 nid, parent_id, secondary_parent_id, island_id, role,
                                 depth, debug_depth, deepen_depth, seed_score, target_slice[:240],
+                                novel_insight[:3000], origin[:40], computed_novelty,
                                 title[:200], hypothesis[:4000], rationale[:4000],
                                 f"Rejected by novelty gate (similarity={sim} with {dup_id})",
                                 time.time(), time.time(),
@@ -478,12 +518,14 @@ class SwarmDB:
                     INSERT INTO nodes(
                         node_id, parent_id, secondary_parent_id, island_id, role, status,
                         depth, debug_depth, deepen_depth, seed_score, target_slice,
+                        novel_insight, origin, novelty_score,
                         title, hypothesis, rationale, candidate_path, created_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         nid, parent_id, secondary_parent_id, island_id, role, status,
                         depth, debug_depth, deepen_depth, seed_score, target_slice[:240],
+                        novel_insight[:3000], origin[:40], computed_novelty,
                         title[:200], hypothesis[:4000], rationale[:4000],
                         candidate_path, time.time(),
                     ),
@@ -536,28 +578,49 @@ class SwarmDB:
             )
             return len(to_rescue)
 
+    def prune_stale_queued_nodes(self, max_explore_per_island: int = 4) -> int:
+        """Keep only the freshest frontier EXPLORE nodes per island so researchers never branch from stale roots."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT node_id, island_id, created_at FROM nodes WHERE status='QUEUED' AND role='EXPLORE' ORDER BY created_at DESC"
+            ).fetchall()
+            seen_per_island: dict[int, int] = {}
+            stale_ids: list[str] = []
+            for r in rows:
+                iid = int(r["island_id"])
+                cnt = seen_per_island.get(iid, 0)
+                if cnt >= max(2, int(max_explore_per_island)):
+                    stale_ids.append(str(r["node_id"]))
+                else:
+                    seen_per_island[iid] = cnt + 1
+            if not stale_ids:
+                return 0
+            placeholders = ",".join("?" for _ in stale_ids)
+            conn.execute(
+                f"UPDATE nodes SET status='ARCHIVED_STALE', finished_at=?, "
+                f"diagnostics='Superseded by fresher frontier EXPLORE node on same island.' "
+                f"WHERE node_id IN ({placeholders})",
+                [time.time(), *stale_ids],
+            )
+            return len(stale_ids)
+
     def claim_next_queued_node(
         self,
         preferred_island: int | None = None,
         exclude_roles: tuple[str, ...] = (),
+        boost_explore: bool = False,
     ) -> dict[str, Any] | None:
-        """Atomically transition the highest-priority QUEUED node to RUNNING."""
-        role_priority = {
-            "META": 0,
-            "DEBUG": 1,
-            "IMPLEMENT": 2,
-            "DEEPEN": 3,
-            "EXPLORE": 4,
-            "CROSSOVER": 5,
-        }
+        """Atomically transition the highest-priority QUEUED node to RUNNING, prioritizing novel leaps."""
+        exp_rank = 1.2 if boost_explore else 3.5
         role_case_sql = (
-            "CASE role "
-            "WHEN 'META' THEN 0 "
-            "WHEN 'DEBUG' THEN 1 "
-            "WHEN 'IMPLEMENT' THEN 2 "
-            "WHEN 'DEEPEN' THEN 3 "
-            "WHEN 'EXPLORE' THEN 4 "
-            "ELSE 5 END"
+            "CASE "
+            "WHEN role='META' THEN 0 "
+            "WHEN role='DEBUG' THEN 1 "
+            f"WHEN role='EXPLORE' THEN {1 if boost_explore else 4} "
+            "WHEN role='IMPLEMENT' AND COALESCE(origin, 'researcher') != 'auto_replenish' THEN 2 "
+            "WHEN role='DEEPEN' THEN 3 "
+            "WHEN role='CROSSOVER' THEN 5 "
+            "ELSE 6 END"
         )
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -565,22 +628,40 @@ class SwarmDB:
                 placeholders = ",".join("?" for _ in exclude_roles)
                 rows = conn.execute(
                     f"SELECT * FROM nodes WHERE status='QUEUED' AND role NOT IN ({placeholders}) "
-                    f"ORDER BY {role_case_sql} ASC, created_at ASC LIMIT 64",
+                    f"ORDER BY {role_case_sql} ASC, COALESCE(novelty_score, 1.0) DESC, created_at DESC LIMIT 128",
                     exclude_roles,
                 ).fetchall()
             else:
                 rows = conn.execute(
                     f"SELECT * FROM nodes WHERE status='QUEUED' "
-                    f"ORDER BY {role_case_sql} ASC, created_at ASC LIMIT 64"
+                    f"ORDER BY {role_case_sql} ASC, COALESCE(novelty_score, 1.0) DESC, created_at DESC LIMIT 128"
                 ).fetchall()
             if not rows:
                 conn.execute("COMMIT")
                 return None
 
-            def _sort_key(r: sqlite3.Row) -> tuple[int, int, float]:
-                rp = role_priority.get(r["role"], 5)
+            def _sort_key(r: sqlite3.Row) -> tuple[float, int, float, int, float]:
+                role = str(r["role"])
+                orig = str(r["origin"] or "researcher")
+                has_insight = 1 if str(r["novel_insight"] or "").strip() else 0
+                if role == "META":
+                    rp = 0.0
+                elif role == "DEBUG":
+                    rp = 1.0
+                elif role == "EXPLORE":
+                    rp = exp_rank
+                elif role == "IMPLEMENT":
+                    rp = 5.0 if (orig == "auto_replenish" and not has_insight) else 2.0
+                elif role == "DEEPEN":
+                    rp = 3.0
+                elif role == "CROSSOVER":
+                    rp = 4.0
+                else:
+                    rp = 5.5
                 isl_match = 0 if (preferred_island is not None and r["island_id"] == preferred_island) else 1
-                return (rp, isl_match, float(r["created_at"]))
+                nov = round(float(r["novelty_score"] if r["novelty_score"] is not None else 1.0), 2)
+                # Prefer explicit novel_insight, higher novelty_score, island round-robin, and freshest frontier lineage!
+                return (rp, -has_insight, -nov, isl_match, -float(r["created_at"]))
 
             chosen = sorted(rows, key=_sort_key)[0]
             now = time.time()
@@ -880,9 +961,10 @@ class SwarmDB:
             own_gain = max(0.5, float(r["speedup"] or 1.0))
             visits = int(r["visits"] or 0)
             explore = c_ucb * math.sqrt(math.log(1.0 + total_visits) / (1.0 + visits))
-            # Slightly prefer island-native nodes over generic baseline once island has elites.
+            # Slightly prefer island-native nodes and lineages carrying novel mathematical insights.
             isl_bonus = 0.08 if int(r["island_id"]) == island_id and r["role"] != "BASELINE" else 0.0
-            val = 0.65 * max_tail + 0.35 * own_gain + explore + isl_bonus - 0.12 * int(r["debug_depth"] or 0)
+            nov_bonus = 0.06 * float(r["novelty_score"] or 0.5) if str(r["novel_insight"] or "").strip() else 0.0
+            val = 0.65 * max_tail + 0.35 * own_gain + explore + isl_bonus + nov_bonus - 0.12 * int(r["debug_depth"] or 0)
             if val > best_val:
                 best_val = val
                 best_row = dict(r)
@@ -967,7 +1049,7 @@ class SwarmDB:
                 "FROM islands ORDER BY island_id ASC"
             ).fetchall()
             recent_wins = conn.execute(
-                "SELECT node_id, role, island_id, score, speedup, title, code_summary FROM nodes "
+                "SELECT node_id, role, island_id, score, speedup, title, COALESCE(novel_insight, '') AS novel_insight, code_summary FROM nodes "
                 "WHERE status='BREAKTHROUGH' ORDER BY finished_at DESC LIMIT 8"
             ).fetchall()
         role_matrix: dict[str, dict[str, int]] = {}
@@ -1028,7 +1110,7 @@ class SwarmDB:
                 "SELECT COUNT(*) AS c FROM nodes WHERE score IS NOT NULL OR status IN ('BREAKTHROUGH','OBSTRUCTED','FAILED')"
             ).fetchone()["c"]
             hyp_created = conn.execute(
-                f"SELECT COUNT(*) AS c FROM nodes WHERE role IN {exp_roles} AND status != 'REJECTED_NOVELTY'"
+                f"SELECT COUNT(*) AS c FROM nodes WHERE role IN {exp_roles} AND status NOT IN ('REJECTED_NOVELTY', 'ARCHIVED_STALE')"
             ).fetchone()["c"]
             hyp_tested = conn.execute(
                 f"SELECT COUNT(*) AS c FROM nodes WHERE role IN {exp_roles} AND (score IS NOT NULL OR status IN ('BREAKTHROUGH','OBSTRUCTED','FAILED','EVALUATED'))"
@@ -1092,7 +1174,7 @@ class SwarmDB:
             nodes = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT * FROM nodes WHERE status != 'REJECTED_NOVELTY' ORDER BY created_at ASC"
+                    "SELECT * FROM nodes WHERE status NOT IN ('REJECTED_NOVELTY', 'ARCHIVED_STALE') ORDER BY created_at ASC"
                 ).fetchall()
             ]
             diary = [

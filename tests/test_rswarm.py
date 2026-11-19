@@ -796,6 +796,78 @@ PY
         finally:
             srv.shutdown()
 
+    async def test_frontier_novelty_doctrine_and_scheduler_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ws = tmp_path / "ws-novelty"
+            local_ev = tmp_path / "local_eval.sh"
+            local_ev.write_text('#!/usr/bin/env bash\necho \'{"valid": true, "score": 22.1, "eval_ms": 1.0, "diagnostics": "ok", "metrics": {}}\'\n')
+            local_ev.chmod(0o755)
+            base_c = tmp_path / "cand.json"
+            base_c.write_text("{}\n")
+
+            cfg = SwarmConfig(name="ws-novelty", workspace_dir=str(ws), brief="Test frontier novelty priority.", num_islands=2)
+            db = SwarmDB(ws / "state" / "swarm.db")
+            rbin = Path(__file__).resolve().parent.parent / "bin" / "rswarm"
+            boot = await bootstrap_workspace(cfg, db, rbin, local_eval_src=str(local_ev), baseline_src=str(base_c))
+            svc = EvalAndTreeService(cfg, db)
+            coord = SwarmCoordinator(cfg, db)
+
+            # 1. Queue an auto_replenish fallback IMPLEMENT node + a novel researcher IMPLEMENT node
+            auto_id, _, _ = db.create_node(
+                island_id=0,
+                role="IMPLEMENT",
+                title="Auto fallback builder",
+                hypothesis="Generic fallback run.",
+                origin="auto_replenish",
+                parent_id=boot["baseline_node_id"],
+                novelty_threshold=None,
+            )
+            prop = await svc.handle_propose({
+                "parent_id": boot["baseline_node_id"],
+                "island_id": 0,
+                "role": "IMPLEMENT",
+                "rationale": "Known single-angle strip templates stall at W = O(L) due to rigid parallel pitch.",
+                "novel_insight": "Break uniform-angle assumption via chirped curvature-varying contact foliations.",
+                "hypothesis": "Construct continuous chirped-angle foliation coupled with active contact-graph eigenmode relaxation.",
+                "target_slice": "k=18..31",
+                "title": "Chirped contact foliation eigenmode solver",
+            })
+            self.assertTrue(prop["accepted"])
+            novel_id = prop["child_node_id"]
+            novel_node = db.get_node(novel_id)
+            self.assertIn("chirped curvature-varying", novel_node["novel_insight"])
+            self.assertGreater(float(novel_node["novelty_score"]), 0.5)
+
+            # 2. Verify prompts embed FRONTIER NOVELTY AXIOM and Core Novel Frontier Insight!
+            isl0 = db.get_islands()[0]
+            sys_p, task_p = coord._build_prompts(novel_node, isl0, None)
+            self.assertIn("FRONTIER NOVELTY AXIOM", sys_p)
+            self.assertIn("Known & Online Methods Cannot Win", task_p)
+            self.assertIn("Core Novel Frontier Insight to Realize", task_p)
+            self.assertIn("chirped curvature-varying", task_p)
+
+            # 3. Verify boost_explore=True claims freshest EXPLORE ahead of IMPLEMENT so researchers never starve!
+            for idx in range(5):
+                db.create_node(
+                    island_id=0,
+                    role="EXPLORE",
+                    title=f"Explore wave #{idx}",
+                    parent_id=boot["baseline_node_id"],
+                    novelty_threshold=None,
+                )
+            pruned = db.prune_stale_queued_nodes(max_explore_per_island=3)
+            self.assertGreaterEqual(pruned, 2)
+
+            claimed_exp = db.claim_next_queued_node(preferred_island=0, boost_explore=True)
+            self.assertEqual(claimed_exp["role"], "EXPLORE")
+            self.assertEqual(claimed_exp["title"], "Explore wave #4")  # freshest frontier EXPLORE!
+
+            # 4. Once an EXPLORE is active (boost_explore=False), novel researcher IMPLEMENT beats auto_replenish!
+            claimed_imp = db.claim_next_queued_node(preferred_island=0, boost_explore=False)
+            self.assertEqual(claimed_imp["node_id"], novel_id)
+            self.assertNotEqual(claimed_imp["node_id"], auto_id)
+
 
 if __name__ == "__main__":
     unittest.main()
