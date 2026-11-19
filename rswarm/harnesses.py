@@ -600,7 +600,7 @@ exec nice -n 15 {rendered}
         timed_out = False
         rate_limited = False
         exit_code = 0
-        max_turns = max(24, start_turn + 12)
+        max_turns = max(48, start_turn + 24)
 
         try:
             for turn in range(start_turn, max_turns + 1):

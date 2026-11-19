@@ -241,13 +241,42 @@ class EvalAndTreeService:
         if not node_id or not self.db.get_node(node_id):
             return {"ok": True, **raw}
 
+        pool_res = None
+        eval_score = raw["score"]
+        eval_diag = raw["diagnostics"]
+        eval_metrics = raw["metrics"]
+
+        if raw["valid"] and (self.ws / "eval" / "merge_pool.sh").is_file():
+            pre_best = self.db.get_meta("best_score")
+            pool_res = await self.try_pool_merge(node_id, cpath)
+            merged_cnt = int(pool_res.get("merged_count") or 0) if isinstance(pool_res, dict) else 0
+            if merged_cnt > 0 and isinstance(pool_res, dict) and pool_res.get("score") is not None:
+                eval_score = float(pool_res["score"])
+                eval_diag = str(pool_res.get("diagnostics") or eval_diag)
+                if isinstance(pool_res.get("metrics"), dict) and pool_res["metrics"]:
+                    eval_metrics = pool_res["metrics"]
+            elif merged_cnt == 0 and pre_best is not None:
+                # Guard against mid-run pool drift: if another worker / bg-polisher lowered vault/best while
+                # this node ran and this node merely re-copied vault/best (`merged_count == 0`), clamp seed_score!
+                cur_node = self.db.get_node(node_id)
+                already_won = bool(
+                    cur_node
+                    and self.db.get_meta("best_node_id") == node_id
+                    and eval_score is not None
+                    and abs(float(eval_score) - float(pre_best)) <= 1e-12
+                )
+                if cur_node and not already_won:
+                    cur_seed = cur_node.get("seed_score")
+                    if cur_seed is None or is_better_score(float(pre_best), float(cur_seed), self.cfg.direction):
+                        self.db.update_node_runtime(node_id, seed_score=float(pre_best))
+
         rec = self.db.record_evaluation(
             node_id,
             valid=raw["valid"],
-            score=raw["score"],
+            score=eval_score,
             eval_ms=raw["eval_ms"],
-            diagnostics=raw["diagnostics"],
-            metrics=raw["metrics"],
+            diagnostics=eval_diag,
+            metrics=eval_metrics,
             candidate_path=str(cpath),
             code_summary=code_summary,
             finalize=finalize,
@@ -255,31 +284,9 @@ class EvalAndTreeService:
         self.db.log_event(
             "BREAKTHROUGH" if rec["is_breakthrough"] else ("INFO" if raw["valid"] else "WARN"),
             node_id,
-            f"Eval valid={raw['valid']} score={raw['score']} speedup={rec['speedup_vs_baseline']:.4f}x ({raw['eval_ms']:.0f}ms)",
+            f"Eval valid={raw['valid']} score={eval_score} speedup={rec['speedup_vs_baseline']:.4f}x ({raw['eval_ms']:.0f}ms)",
         )
-        pool_res = None
-        if raw["valid"]:
-            pool_res = await self.try_pool_merge(node_id, cpath)
-            # If this node contributed strictly new subproblem wins (`merged_count > 0`) to `vault/best`,
-            # credit it as a genuine breakthrough even if another worker improved orthogonal subproblems concurrently!
-            if (
-                isinstance(pool_res, dict)
-                and int(pool_res.get("merged_count") or 0) > 0
-                and not rec["is_breakthrough"]
-            ):
-                merged_score = float(pool_res.get("score") or raw["score"])
-                rec = self.db.record_evaluation(
-                    node_id,
-                    valid=True,
-                    score=merged_score,
-                    eval_ms=raw["eval_ms"],
-                    diagnostics=str(pool_res.get("diagnostics") or raw["diagnostics"]),
-                    metrics=pool_res.get("metrics") if isinstance(pool_res.get("metrics"), dict) else raw["metrics"],
-                    candidate_path=str(cpath),
-                    code_summary=code_summary,
-                    finalize=finalize,
-                )
-        return {"ok": True, **rec, "metrics": raw["metrics"], "pool_merge": pool_res}
+        return {"ok": True, **rec, "metrics": eval_metrics, "pool_merge": pool_res}
 
     def _promote_node_solvers_to_vault(self, node_id: str) -> None:
         """Archive winning C++/CUDA/Python solver code into vault/solvers/<node_id>/ so children compound algorithms."""

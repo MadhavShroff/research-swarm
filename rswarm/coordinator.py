@@ -476,18 +476,28 @@ Steps:
         return system_prompt, task_prompt
 
     def _replenish_frontier_if_needed(self) -> None:
-        """Keep the multiplying tree fed using Entropic UCB parent selection across all islands."""
+        """Keep the multiplying tree fed, ensuring IMPLEMENT builders never run dry when EXPLORE cools down."""
         stats = self.db.get_summary_stats()
         active_or_queued = stats["queued"] + stats["running"]
+        with self.db._lock, self.db._connect() as conn:
+            imp_supply = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM nodes WHERE role='IMPLEMENT' AND status IN ('QUEUED','RUNNING')"
+                ).fetchone()["c"]
+                or 0
+            )
         min_buffer = max(self.cfg.num_islands, self.cfg.concurrency)
-        if active_or_queued >= min_buffer:
+        need_total = max(0, min_buffer - active_or_queued)
+        need_imp = max(0, self.cfg.concurrency - imp_supply)
+        needed = max(need_total, need_imp)
+        if needed <= 0:
             return
 
         islands = self.db.get_islands()
         if not islands:
             return
 
-        needed = min_buffer - active_or_queued
+        only_builders = (active_or_queued >= min_buffer and need_imp > 0)
         for idx in range(needed):
             isl = islands[self._island_rr % len(islands)]
             self._island_rr += 1
@@ -497,9 +507,8 @@ Steps:
             pscore = parent["score"] if parent else self.db.get_meta("baseline_score")
             pspeed = float(parent["speedup"] or 1.0) if parent else 1.0
 
-            # Mix 1 EXPLORE (spawns 2-3 tailored hypotheses) with 2 direct IMPLEMENT builders
-            # so builders immediately push the score while researchers expand the tree!
-            if idx % 3 == 0:
+            # Mix 1 EXPLORE with 2 IMPLEMENT normally; when queue already holds EXPLOREs, replenish IMPLEMENT directly!
+            if (not only_builders) and (idx % 3 == 0):
                 self.db.create_node(
                     island_id=iid,
                     role="EXPLORE",
@@ -653,6 +662,7 @@ Steps:
             else:
                 # Harvest any scratch candidate artifacts matching candidate suffix (or *.json) in wdir into the global pool!
                 best_exit_cand = copied_cand
+                base_size = copied_cand.stat().st_size if (copied_cand and copied_cand.exists()) else 0
                 newest_mtime = copied_cand.stat().st_mtime if (copied_cand and copied_cand.exists()) else 0.0
                 cand_ext = copied_cand.suffix.lower() if (copied_cand and copied_cand.is_file() and copied_cand.suffix) else ".json"
                 target_exts = {cand_ext, ".json"}
@@ -664,7 +674,8 @@ Steps:
                         continue
                     await self.eval_service.try_pool_merge(nid, jf)
                     mt = jf.stat().st_mtime
-                    if jf.suffix.lower() == cand_ext and mt > newest_mtime + 0.5:
+                    # Only promote a scratch file as primary submit artifact if it is comparable in size to full candidate!
+                    if jf.suffix.lower() == cand_ext and mt > newest_mtime + 0.5 and jf.stat().st_size >= max(16, int(base_size * 0.5)):
                         newest_mtime = mt
                         best_exit_cand = jf
 
