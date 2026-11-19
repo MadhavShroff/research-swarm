@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import difflib
 import json
 import os
+import py_compile
+import re
 import shlex
+import shutil
 import socket
 import tempfile
 import time
@@ -108,15 +112,37 @@ MUX_LITE_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "edit_file",
-        "description": "Replace exact target text in an existing file.",
+        "description": "Replace exact target text in an existing file. Runs automatic syntax verification and returns closest-line hints on mismatch.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Path relative to your working directory."},
-                "old_text": {"type": "string", "description": "Exact substring to replace."},
+                "old_text": {"type": "string", "description": "Exact unique substring to replace."},
                 "new_text": {"type": "string", "description": "Replacement substring."},
             },
             "required": ["path", "old_text", "new_text"],
+        },
+    },
+    {
+        "name": "list_dir",
+        "description": "List files and subdirectories inside a workspace path without shell escaping errors.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative or absolute directory path (default: '.')."},
+            },
+        },
+    },
+    {
+        "name": "grep_files",
+        "description": "Search for a literal or regex pattern across files in a workspace directory without shell quoting errors.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex or literal substring to search for."},
+                "path": {"type": "string", "description": "Directory or file path relative to workdir (default: '.')."},
+            },
+            "required": ["pattern"],
         },
     },
     {
@@ -730,6 +756,79 @@ exec nice -n 15 {rendered}
                     raise PermissionError(f"Agents may only write inside {workdir}: got {target}")
         return target
 
+    async def _post_write_syntax_check(self, target: Path, workdir: Path) -> str:
+        """Run fast (<5ms-8s) automatic static/syntax verification after write_file or edit_file."""
+        suf = target.suffix.lower()
+        try:
+            if suf == ".py":
+                py_compile.compile(str(target), doraise=True)
+                return " [syntax=OK:py]"
+            if suf == ".json":
+                json.loads(target.read_text(errors="replace"))
+                return " [syntax=OK:json]"
+            if suf == ".sh":
+                proc = await asyncio.create_subprocess_exec(
+                    "bash", "-n", str(target),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                )
+                out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+                if proc.returncode != 0:
+                    return f"\n[SYNTAX CHECK FAILED: bash -n]\n{out_b.decode('utf-8', errors='replace')[:1200]}"
+                return " [syntax=OK:sh]"
+            if suf in (".cpp", ".cc", ".cxx", ".hpp"):
+                if shutil.which("g++"):
+                    proc = await asyncio.create_subprocess_exec(
+                        "g++", "-fsyntax-only", "-std=c++20",
+                        f"-I{workdir}", f"-I{self.workspace_dir / 'shared'}",
+                        str(target),
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                    )
+                    out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
+                    if proc.returncode != 0:
+                        diag = "\n".join(out_b.decode("utf-8", errors="replace").splitlines()[:16])
+                        return f"\n[SYNTAX CHECK FAILED: g++ -fsyntax-only]\n{diag[:1600]}"
+                    return " [syntax=OK:c++20]"
+        except py_compile.PyCompileError as exc:
+            return f"\n[SYNTAX CHECK FAILED: Python]\n{exc}"
+        except json.JSONDecodeError as exc:
+            return f"\n[SYNTAX CHECK FAILED: JSON]\nLine {exc.lineno} col {exc.colno}: {exc.msg}"
+        except asyncio.TimeoutError:
+            return " [syntax=SKIPPED:timeout]"
+        except Exception:
+            return ""
+        return ""
+
+    def _guard_candidate_write(self, target: Path, workdir: Path, new_content: str) -> str | None:
+        """Prevent accidental destructive truncation or invalid JSON overwrite of ./candidate/* files."""
+        cand_dir = (workdir / "candidate").resolve()
+        if not str(target).startswith(str(cand_dir)):
+            return None
+        if target.is_file():
+            bdir = workdir / ".candidate_backup"
+            bdir.mkdir(parents=True, exist_ok=True)
+            bfile = bdir / target.name
+            if not bfile.exists():
+                try:
+                    shutil.copy2(target, bfile)
+                except OSError:
+                    pass
+            old_size = target.stat().st_size
+            if target.suffix.lower() == ".json":
+                try:
+                    json.loads(new_content)
+                except json.JSONDecodeError as exc:
+                    return (
+                        f"ERROR: Refused writing invalid JSON to protected candidate {target.name} "
+                        f"(line {exc.lineno} col {exc.colno}: {exc.msg}). Existing candidate preserved."
+                    )
+                if old_size >= 4096 and len(new_content.encode("utf-8")) < int(old_size * 0.5):
+                    return (
+                        f"ERROR: Refused destructive truncation of {target.name} "
+                        f"({len(new_content)} bytes vs {old_size} bytes baseline). "
+                        "Write partial subproblem updates to `./patch.json` and merge safely via `swarm-check patch.json --apply`!"
+                    )
+        return None
+
     async def _exec_lite_tool(
         self,
         name: str,
@@ -739,6 +838,39 @@ exec nice -n 15 {rendered}
         allow_eval_write: bool,
     ) -> str:
         try:
+            if name == "list_dir":
+                target = self._resolve_safe_path(workdir, str(inp.get("path") or "."), allow_eval_write, write=False)
+                if not target.is_dir():
+                    return f"ERROR: directory not found: {target}"
+                entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name))[:120]
+                lines = [f"{p.name}/" if p.is_dir() else f"{p.name} ({p.stat().st_size} B)" for p in entries if not p.name.startswith(".ckpt")]
+                return "\n".join(lines) or "(empty directory)"
+
+            if name == "grep_files":
+                pat = str(inp.get("pattern") or "")
+                if not pat:
+                    return "ERROR: empty pattern"
+                target = self._resolve_safe_path(workdir, str(inp.get("path") or "."), allow_eval_write, write=False)
+                rx = re.compile(pat, re.IGNORECASE)
+                files = [target] if target.is_file() else [
+                    p for p in sorted(target.rglob("*"))
+                    if p.is_file() and not p.name.startswith(".") and p.stat().st_size <= 512_000
+                ][:80]
+                hits: list[str] = []
+                for fp in files:
+                    try:
+                        for idx, ln in enumerate(fp.read_text(errors="replace").splitlines(), 1):
+                            if rx.search(ln):
+                                rel = fp.relative_to(workdir) if str(fp).startswith(str(workdir)) else fp.name
+                                hits.append(f"{rel}:{idx}: {ln[:220]}")
+                                if len(hits) >= 60:
+                                    break
+                    except OSError:
+                        continue
+                    if len(hits) >= 60:
+                        break
+                return "\n".join(hits) or f"(no matches for /{pat}/)"
+
             if name == "read_file":
                 target = self._resolve_safe_path(workdir, str(inp.get("path", "")), allow_eval_write, write=False)
                 if not target.is_file():
@@ -751,10 +883,14 @@ exec nice -n 15 {rendered}
 
             if name == "write_file":
                 target = self._resolve_safe_path(workdir, str(inp.get("path", "")), allow_eval_write, write=True)
-                target.parent.mkdir(parents=True, exist_ok=True)
                 content = str(inp.get("content", ""))
+                guard_err = self._guard_candidate_write(target, workdir, content)
+                if guard_err:
+                    return guard_err
+                target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content)
-                return f"OK: wrote {len(content)} bytes to {target}"
+                chk = await self._post_write_syntax_check(target, workdir)
+                return f"OK: wrote {len(content)} bytes to {target}{chk}"
 
             if name == "edit_file":
                 target = self._resolve_safe_path(workdir, str(inp.get("path", "")), allow_eval_write, write=True)
@@ -763,10 +899,35 @@ exec nice -n 15 {rendered}
                 src = target.read_text()
                 old_t = str(inp.get("old_text", ""))
                 new_t = str(inp.get("new_text", ""))
-                if old_t not in src:
-                    return "ERROR: old_text not found in file."
-                target.write_text(src.replace(old_t, new_t, 1))
-                return f"OK: updated {target}"
+                if not old_t:
+                    return "ERROR: old_text cannot be empty."
+                cnt = src.count(old_t)
+                if cnt == 0:
+                    # Provide closest-line hint so smaller models fix whitespace/typo mismatches in 1 turn!
+                    src_lines = src.splitlines()
+                    probe = old_t.strip().splitlines()[0].strip() if old_t.strip() else ""
+                    best_i, best_r = 0, 0.0
+                    for idx, ln in enumerate(src_lines):
+                        r = difflib.SequenceMatcher(None, probe, ln.strip()).ratio()
+                        if r > best_r:
+                            best_r, best_i = r, idx
+                    s0 = max(0, best_i - 3)
+                    s1 = min(len(src_lines), best_i + 7)
+                    ctx = "\n".join(f"{i+1}: {src_lines[i]}" for i in range(s0, s1))
+                    return f"ERROR: old_text not found verbatim in {target.name}. Closest region (lines {s0+1}-{s1}):\n{ctx}"
+                if cnt > 1:
+                    match_lines = [
+                        i + 1 for i, ln in enumerate(src.splitlines())
+                        if old_t.splitlines()[0] in ln
+                    ][:8]
+                    return f"ERROR: old_text matched {cnt} times (lines {match_lines}). Include 2-3 surrounding lines to make old_text unique."
+                updated = src.replace(old_t, new_t, 1)
+                guard_err = self._guard_candidate_write(target, workdir, updated)
+                if guard_err:
+                    return guard_err
+                target.write_text(updated)
+                chk = await self._post_write_syntax_check(target, workdir)
+                return f"OK: updated {target}{chk}"
 
             if name == "search_literature":
                 lit_dir = self.workspace_dir / "shared" / "literature"
@@ -946,6 +1107,9 @@ exec nice -n 15 {rendered}
         rate_limited = False
         exit_code = 0
         max_turns = max(48, start_turn + 24)
+        expects_submit = ("swarm-submit " in task_prompt)
+        called_submit = False
+        nudged_submit = False
 
         try:
             for turn in range(start_turn, max_turns + 1):
@@ -1072,6 +1236,23 @@ exec nice -n 15 {rendered}
                         )
                         _save_checkpoint(messages, turn, final_text)
                         continue
+                    if expects_submit and not called_submit and not nudged_submit and turn < max_turns and (timeout_sec - (time.monotonic() - t0)) > 25.0:
+                        nudged_submit = True
+                        _append_log(f"\n[Turn {turn} · Pre-exit self-check: agent has not called swarm-submit yet; nudging clean submit.]")
+                        if assistant_keep:
+                            messages.append({"role": "assistant", "content": assistant_keep})
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Pre-exit check: you have not called `swarm-submit` yet. "
+                                    "If you wrote a `patch.json`, run `swarm-check patch.json --apply`, then call "
+                                    "`swarm-submit ./candidate/overrides.json --summary \"SPEC_FILES=...; MECHANISM=...; VERIFY=...\"` now."
+                                ),
+                            }
+                        )
+                        _save_checkpoint(messages, turn, final_text)
+                        continue
                     _save_checkpoint(messages, turn, final_text)
                     _append_log(f"\n=== [DONE] turns={turn} elapsed={time.monotonic()-t0:.1f}s ===")
                     break
@@ -1079,14 +1260,18 @@ exec nice -n 15 {rendered}
                 messages.append({"role": "assistant", "content": assistant_keep})
                 tool_results: list[dict[str, Any]] = []
                 for tu in tool_uses:
+                    tname = str(tu.get("name", ""))
+                    tinp = tu.get("input") or {}
+                    if tname == "bash" and "swarm-submit" in str(tinp.get("command") or ""):
+                        called_submit = True
                     res_str = await self._exec_lite_tool(
-                        str(tu.get("name", "")),
-                        tu.get("input") or {},
+                        tname,
+                        tinp,
                         workdir,
                         node_id,
                         allow_eval_write,
                     )
-                    _append_log(f"[Tool Result <- {tu.get('name')}]\n{res_str[:1500]}")
+                    _append_log(f"[Tool Result <- {tname}]\n{res_str[:1500]}")
                     tool_results.append(
                         {
                             "type": "tool_result",
@@ -1094,16 +1279,23 @@ exec nice -n 15 {rendered}
                             "content": res_str,
                         }
                     )
-                rem_post = timeout_sec - (time.monotonic() - t0)
+                elapsed_now = time.monotonic() - t0
+                rem_post = timeout_sec - elapsed_now
                 if (turn >= max_turns - 2 or rem_post < 120.0) and turn < max_turns:
                     tool_results.append(
                         {
                             "type": "text",
                             "text": (
-                                "[SYSTEM FINAL-TURN FLUSH NOTICE] Fewer than 2 turns / 120s remain in this window. "
-                                "Stop exploratory tuning—immediately write your best verified results into `./candidate/`, "
-                                "run `swarm-eval`, and run `swarm-submit` NOW so zero progress is lost!"
+                                f"[SYSTEM FINAL-TURN FLUSH NOTICE] Budget: turn={turn}/{max_turns}, elapsed={elapsed_now:.0f}s/{timeout_sec}s, remaining={max(0.0, rem_post):.0f}s. "
+                                "Stop exploratory tuning—immediately run `swarm-check patch.json --apply` (if any) and `swarm-submit` NOW so zero progress is lost!"
                             ),
+                        }
+                    )
+                elif (elapsed_now >= 240.0 or turn >= 16) and turn < max_turns:
+                    tool_results.append(
+                        {
+                            "type": "text",
+                            "text": f"[Budget: turn={turn}/{max_turns}, elapsed={elapsed_now:.0f}s/{timeout_sec}s, remaining={max(0.0, rem_post):.0f}s — keep bash loops <=90s and flush wins early via swarm-check!]",
                         }
                     )
                 messages.append({"role": "user", "content": tool_results})

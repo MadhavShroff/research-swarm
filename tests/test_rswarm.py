@@ -911,6 +911,47 @@ PY
             self.assertIn("tetratic_pt.cpp", s_task)
             self.assertIn("### [4] VERIFICATION PLAN (Exact Test Command & Acceptance Criterion)", s_task)
 
+    async def test_implementer_error_prevention_guards(self) -> None:
+        from rswarm.harnesses import HarnessRunner
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ws = tmp_path / "ws-guards"
+            (ws / "shared").mkdir(parents=True)
+            (ws / "eval").mkdir(parents=True)
+            wdir = ws / "work" / "n_guard"
+            (wdir / "candidate").mkdir(parents=True)
+            tpool = TmuxPool("rswarm-guard-test", ws)
+            runner = HarnessRunner(workspace_dir=ws, tmux_pool=tpool)
+
+            # 1. Instant Python & JSON syntax feedback on write_file!
+            py_bad = await runner._exec_lite_tool("write_file", {"path": "bad.py", "content": "def broken(:\n  pass\n"}, wdir, "n_guard", False)
+            self.assertIn("SYNTAX CHECK FAILED: Python", py_bad)
+            py_ok = await runner._exec_lite_tool("write_file", {"path": "good.py", "content": "def ok(x):\n    return x + 1\n"}, wdir, "n_guard", False)
+            self.assertIn("[syntax=OK:py]", py_ok)
+            js_bad = await runner._exec_lite_tool("write_file", {"path": "patch.json", "content": '{"17": [1, 2'}, wdir, "n_guard", False)
+            self.assertIn("SYNTAX CHECK FAILED: JSON", js_bad)
+
+            # 2. Candidate truncation & invalid JSON guard + automatic .candidate_backup!
+            big_cand = wdir / "candidate" / "overrides.json"
+            big_cand.write_text(json.dumps({str(i): [i, i, 0.0] for i in range(400)}))
+            trunc = await runner._exec_lite_tool("write_file", {"path": "candidate/overrides.json", "content": '{"17": [0,0,0]}'}, wdir, "n_guard", False)
+            self.assertIn("Refused destructive truncation", trunc)
+            self.assertTrue((wdir / ".candidate_backup" / "overrides.json").is_file())
+
+            # 3. Fuzzy-hint & multi-match guard on edit_file!
+            await runner._exec_lite_tool("write_file", {"path": "dup.py", "content": "x = 1\ny = 2\nx = 1\n"}, wdir, "n_guard", False)
+            multi = await runner._exec_lite_tool("edit_file", {"path": "dup.py", "old_text": "x = 1", "new_text": "x = 9"}, wdir, "n_guard", False)
+            self.assertIn("matched 2 times", multi)
+            miss = await runner._exec_lite_tool("edit_file", {"path": "good.py", "old_text": "def ok(y):\n    return y + 1", "new_text": "pass"}, wdir, "n_guard", False)
+            self.assertIn("Closest region", miss)
+            self.assertIn("def ok(x):", miss)
+
+            # 4. Native list_dir & grep_files!
+            ls_out = await runner._exec_lite_tool("list_dir", {"path": "."}, wdir, "n_guard", False)
+            self.assertIn("good.py", ls_out)
+            gr_out = await runner._exec_lite_tool("grep_files", {"pattern": "return x \\+ 1", "path": "."}, wdir, "n_guard", False)
+            self.assertIn("good.py:2:", gr_out)
+
 
 if __name__ == "__main__":
     unittest.main()

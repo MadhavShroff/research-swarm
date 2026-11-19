@@ -750,10 +750,24 @@ class EvalAndTreeService:
                 "hosted_submission": hosted_res,
             }
 
-        # Case 3: Valid run, no improvement -> record Obstruction so peers learn what did NOT help.
+        # Case 3: Valid run, no improvement -> record Obstruction + audit whether solver artifacts were actually built.
+        wdir = self.ws / "work" / node_id
+        built_files: list[str] = []
+        if wdir.is_dir():
+            for fp in sorted(wdir.rglob("*")):
+                if fp.is_symlink() or not fp.is_file():
+                    continue
+                rel_p = fp.relative_to(wdir)
+                if any(part.startswith(".") or part in ("candidate", "secondary_parent", "shared", "solvers_vault") for part in rel_p.parts):
+                    continue
+                if fp.suffix.lower() in (".cpp", ".cc", ".cxx", ".cu", ".h", ".hpp", ".py", ".sh"):
+                    built_files.append(str(rel_p))
+        has_spec = bool(str(node.get("execution_spec_json") or "").strip() not in ("", "{}"))
+        spec_drift = bool(has_spec and not built_files and str(node.get("role") or "").upper() in ("IMPLEMENT", "DEEPEN"))
+        drift_tag = "[SPEC_DRIFT: 0 solver files built] " if spec_drift else ""
         obs_msg = (
-            f"[OBSTRUCTION] {node['title']} scored {eval_res['score']} "
-            f"({eval_res['speedup_vs_baseline']:.4f}x, did not beat parent). Lesson: {summary[:300]}"
+            f"[OBSTRUCTION] {drift_tag}{node['title']} scored {eval_res['score']} "
+            f"({eval_res['speedup_vs_baseline']:.4f}x, built={len(built_files)} file(s)). Lesson: {summary[:280]}"
         )
         self.db.post_bulletin(
             "OBSTRUCTION",
@@ -765,14 +779,14 @@ class EvalAndTreeService:
         )
         self.db.add_diary(
             "OBSTRUCTION",
-            f"No gain: {node['title']} ({eval_res['speedup_vs_baseline']:.4f}x)",
-            f"Score: {eval_res['score']}\nSummary: {summary}\nDiagnostics: {eval_res['diagnostics']}",
+            f"No gain: {drift_tag}{node['title']} ({eval_res['speedup_vs_baseline']:.4f}x)",
+            f"Score: {eval_res['score']}\nBuilt Files: {built_files[:12]}\nSummary: {summary}\nDiagnostics: {eval_res['diagnostics']}",
             node_id=node_id,
             island_id=island_id,
             score=eval_res["score"],
             speedup=eval_res["speedup_vs_baseline"],
         )
-        return {**eval_res, "vault_promoted": False}
+        return {**eval_res, "vault_promoted": False, "built_files": built_files[:16], "spec_drift": spec_drift}
 
     async def handle_hosted_submit(self, req: dict[str, Any]) -> dict[str, Any]:
         node_id = req.get("node_id")
