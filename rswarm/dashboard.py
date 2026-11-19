@@ -1048,6 +1048,22 @@ async function selectNode(nodeId, { openInspectorDrawer = false } = {}) {
         <div class="sec-label" style="color:#38bdf8;">Novel Frontier Insight (Beyond Known Methods)</div>
         <pre class="code-block">${escapeHtml(n.novel_insight)}</pre>
       </div>` : ''}
+      ${(() => {
+        try {
+          const sp = n.execution_spec_json ? JSON.parse(n.execution_spec_json) : {};
+          if (sp && (sp.target_files || sp.exact_changes || sp.verification_plan)) {
+            return `<div class="sec-box" style="border-color:rgba(52,211,153,0.45);background:rgba(52,211,153,0.06);">
+              <div class="sec-label" style="color:#34d399;">Standardized Execution Spec (Where / What / Verify)</div>
+              <pre class="code-block">${escapeHtml(
+                (sp.target_files ? 'TARGET FILES:\n' + sp.target_files + '\n\n' : '') +
+                (sp.exact_changes ? 'EXACT CHANGES:\n' + sp.exact_changes + '\n\n' : '') +
+                (sp.verification_plan ? 'VERIFICATION PLAN:\n' + sp.verification_plan : '')
+              )}</pre>
+            </div>`;
+          }
+        } catch (_) {}
+        return '';
+      })()}
       <div class="sec-box">
         <div class="sec-label">Hypothesis & First-Principles Rationale</div>
         <pre class="code-block">${escapeHtml((n.hypothesis || '') + (n.rationale ? '\n\nRationale:\n' + n.rationale : ''))}</pre>

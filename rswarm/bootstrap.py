@@ -72,6 +72,10 @@ exec {rswarm_bin} agent eval --workspace "{ws}" "$@"
 set -euo pipefail
 exec {rswarm_bin} agent propose --workspace "{ws}" "$@"
 """,
+        "swarm-submit-hypothesis": f"""#!/usr/bin/env bash
+set -euo pipefail
+exec {rswarm_bin} agent submit-hypothesis --workspace "{ws}" "$@"
+""",
         "swarm-submit": f"""#!/usr/bin/env bash
 set -euo pipefail
 exec {rswarm_bin} agent submit --workspace "{ws}" "$@"

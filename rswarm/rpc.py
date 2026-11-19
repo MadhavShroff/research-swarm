@@ -450,10 +450,53 @@ class EvalAndTreeService:
         parent = self.db.get_node(parent_id) if parent_id else None
         island_id = int(req["island_id"]) if req.get("island_id") is not None else (int(parent["island_id"]) if parent else 0)
         title = str(req.get("title") or "Untitled Hypothesis").strip()
-        hypothesis = str(req.get("hypothesis") or "").strip()
         rationale = str(req.get("rationale") or "").strip()
         novel_insight = str(req.get("novel_insight") or "").strip()
         target_slice = str(req.get("target_slice") or "").strip()
+        target_files = req.get("target_files")
+        if isinstance(target_files, list):
+            target_files_str = ", ".join(str(x).strip() for x in target_files if str(x).strip())
+        else:
+            target_files_str = str(target_files or "").strip()
+        exact_changes = str(req.get("exact_changes") or "").strip()
+        verification_plan = str(req.get("verification_plan") or "").strip()
+        hypothesis = str(req.get("hypothesis") or "").strip()
+        require_spec = bool(req.get("require_spec", False))
+
+        if require_spec:
+            missing = []
+            for fname, fval in (
+                ("rationale", rationale),
+                ("novel_insight", novel_insight),
+                ("target_files", target_files_str),
+                ("exact_changes", exact_changes),
+                ("verification_plan", verification_plan),
+                ("target_slice", target_slice),
+                ("title", title if title != "Untitled Hypothesis" else ""),
+            ):
+                if len(fval.strip()) < 8:
+                    missing.append(fname)
+            if missing:
+                return {
+                    "ok": False,
+                    "accepted": False,
+                    "error": (
+                        f"submit_hypothesis requires explicit, non-empty execution spec fields: {', '.join(missing)}. "
+                        "Provide exact target files, concrete step-by-step code/math changes, and exact verification commands so the implementer can execute faithfully."
+                    ),
+                }
+
+        execution_spec: dict[str, Any] = {}
+        if any((target_files_str, exact_changes, verification_plan)):
+            execution_spec = {
+                "target_files": target_files_str,
+                "exact_changes": exact_changes,
+                "verification_plan": verification_plan,
+                "target_slice": target_slice,
+            }
+        if not hypothesis and exact_changes:
+            hypothesis = f"{exact_changes}\n\nVerification: {verification_plan}" if verification_plan else exact_changes
+
         default_origin = "meta" if (parent and str(parent.get("role") or "").upper() == "META") else "researcher"
         origin = str(req.get("origin") or default_origin).strip() or default_origin
         role = str(req.get("role") or "IMPLEMENT").upper()
@@ -467,6 +510,7 @@ class EvalAndTreeService:
             hypothesis=hypothesis,
             rationale=rationale,
             novel_insight=novel_insight,
+            execution_spec=execution_spec,
             origin=origin,
             parent_id=parent_id,
             target_slice=target_slice,
@@ -477,17 +521,22 @@ class EvalAndTreeService:
         nov_sc = created_node.get("novelty_score") if created_node else None
         if accepted:
             insight_line = f"Novel Insight: {novel_insight}\n" if novel_insight else ""
+            spec_line = (
+                f"Target Files: {target_files_str}\nExact Changes: {exact_changes[:1200]}\nVerification: {verification_plan[:800]}\n"
+                if execution_spec
+                else ""
+            )
             self.db.add_diary(
                 "HYPOTHESIS",
                 f"[{role}] {title}",
-                f"Parent: {parent_id} (novelty={nov_sc})\n{insight_line}Hypothesis: {hypothesis}\nRationale: {rationale}",
+                f"Parent: {parent_id} (novelty={nov_sc})\n{insight_line}{spec_line}Hypothesis: {hypothesis}\nRationale: {rationale}",
                 node_id=nid,
                 island_id=island_id,
             )
-            self.db.log_event("PROPOSE", nid, f"Queued {role} on island {island_id} (novelty={nov_sc}): {title}")
+            self.db.log_event("PROPOSE", nid, f"Queued {role} on island {island_id} (novelty={nov_sc}, spec={bool(execution_spec)}): {title}")
         else:
             self.db.log_event("NOVELTY", nid, f"Filtered duplicate proposal: {title} ({msg})")
-        return {"ok": True, "accepted": accepted, "child_node_id": nid, "novelty_score": nov_sc, "message": msg}
+        return {"ok": True, "accepted": accepted, "child_node_id": nid, "novelty_score": nov_sc, "has_execution_spec": bool(execution_spec), "message": msg}
 
     async def handle_submit(self, req: dict[str, Any]) -> dict[str, Any]:
         node_id = str(req.get("node_id") or "").strip()

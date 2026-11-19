@@ -372,6 +372,18 @@ class SwarmCoordinator:
 
         role = str(node["role"]).upper()
         engine_root = Path(__file__).resolve().parent.parent
+        impl_contract = (
+            "\nSTANDARDIZED EXECUTION SPEC CONTRACT (HypothesisExecutionSpec):\n"
+            "Your task prompt follows a strict 4-part contract authored by the Researcher: "
+            "[1] WHY (Rationale & Novel Insight), [2] TARGET FILES (exact files to read/create/edit), "
+            "[3] EXACT CHANGES (exact formulas, data structures, edits, and compile/run commands), and "
+            "[4] VERIFICATION PLAN (exact test command, target instances, and acceptance criterion).\n"
+            "FIDELITY MANDATE: Implement the EXACT target_files, exact_changes, and verification_plan specified—NEVER silently substitute a different algorithm, "
+            "NEVER exit with zero solver files created, and NEVER submit an audit-only summary! "
+            "In `swarm-submit --summary`, explicitly report which files you created/edited and the measured output of the verification_plan.\n"
+            if role in ("IMPLEMENT", "DEEPEN")
+            else ""
+        )
         system_prompt = (
             f"You are an autonomous {role} agent in the `{self.cfg.name}` research swarm.\n"
             f"Mission: Advance the mathematical and algorithmic frontier FAR BEYOND leaderboard #1 "
@@ -381,8 +393,9 @@ class SwarmCoordinator:
             "FRONTIER NOVELTY & CROSS-DISCIPLINARY AXIOM: Online, textbook, and narrow in-domain methods CANNOT evolve the frontier—every known public method "
             "is already absorbed into the competitive floor. Dive into diverse and disparate fields of science, mathematics, physics, biology, materials science, "
             "and global research traditions to import original mathematical structures, invariants, and operators that break the hidden assumptions of prior art.\n"
+            f"{impl_contract}"
             f"Your Node ID is `{node['node_id']}` on Research Island #{island['island_id']} (`{island['name']}`).\n"
-            "CLI skills on your PATH: `swarm-search`, `swarm-fetch`, `swarm-check`, `swarm-eval`, `swarm-propose`, `swarm-submit`, `swarm-directive`, `swarm-island`, `swarm-hosted-submit`.\n"
+            "CLI skills on your PATH: `swarm-submit-hypothesis`, `swarm-search`, `swarm-fetch`, `swarm-check`, `swarm-eval`, `swarm-propose`, `swarm-submit`, `swarm-directive`, `swarm-island`, `swarm-hosted-submit`.\n"
             f"Never modify `eval/` (it is read-only) and do NOT read `{engine_root}` engine internals."
         )
 
@@ -510,35 +523,38 @@ STRICT DISCIPLINE: Do NOT run `swarm-eval`, do NOT write `matplotlib` plots, and
    ```bash
    swarm-island --name "<2-3-word-slug>" --focus "<disparate scientific domain + broken assumption + concrete mathematical operator/algorithm>"
    ```
-3. **Pin Cross-Disciplinary Directive (`swarm-directive`) & Propose 3-4 Novel Sharded Hypotheses (`swarm-propose`)** (order reasoning -> novel insight -> mechanism -> title):
+3. **Pin Cross-Disciplinary Directive (`swarm-directive`) & Submit 3-4 Complete Execution Specs (`swarm-submit-hypothesis`)** (ALL fields required so smaller Implementers execute faithfully with zero guesswork!):
    ```bash
    swarm-directive --directive "<high-leverage cross-disciplinary shift: which narrow in-domain traps to drop and which physics/biology/math/global mechanisms + non-wall anchors to attack>"
-   swarm-propose --island-id <active_island_id> --role IMPLEMENT \\
-     --rationale "<first-principles analysis of why narrow in-domain methods plateau and how a mechanism from {lens_name} or another scientific field breaks this barrier>" \\
-     --novel-insight "<source scientific field + exact hidden assumption broken + original mathematical structure or operator invented>" \\
-     --hypothesis "<concrete falsifiable mathematical formulation and C++/CUDA/Python solver to build>" \\
-     --target-slice "<specific non-wall anchor slice>" \\
-     --title "<concise 4-8 word novel mechanism title>"
+   swarm-submit-hypothesis --island-id <active_island_id> --role IMPLEMENT \\
+     --rationale "<WHY: first-principles analysis of why narrow methods plateau and how a mechanism from {lens_name} breaks this barrier>" \\
+     --novel-insight "<INSIGHT: source scientific field + exact hidden assumption broken + original mathematical structure or operator>" \\
+     --target-files "<WHERE: exact files to read/reuse (e.g. ./shared/packing_sdk.hpp) and exact files/functions to create or edit (e.g. ./my_solver.cpp, ./patch.json)>" \\
+     --exact-changes "<WHAT & HOW: explicit formulas, data structures, step-by-step code/edit instructions, compile flags, and parameter sweeps>" \\
+     --verification-plan "<VERIFY: exact compile+run command, explicit target puzzle IDs n=..., measurable pass/fail criterion, and swarm-check patch.json --apply>" \\
+     --target-slice "<SLICE: specific non-wall anchor slice>" \\
+     --title "<TITLE: concise 4-8 word novel mechanism title>"
    ```
 """
         elif role == "EXPLORE":
             lens_name, lens_desc = self._next_science_lens(node, island)
             task_prompt = f"""{common_context}
-## Your Assignment (`EXPLORE` — Cross-Disciplinary Frontier Theorist & Novel-Leap Creator)
-STRICT DISCIPLINE: Do NOT run `swarm-eval`, do NOT generate `matplotlib` plots, and do NOT write multi-minute audit scripts! The exact non-wall, non-proved surgery targets are already listed in `./shared/gap_ledger.json` above. Complete your analysis and invoke `swarm-propose` within 3-5 tool calls!
+## Your Assignment (`EXPLORE` — Cross-Disciplinary Frontier Theorist & Execution-Spec Author)
+STRICT DISCIPLINE: Do NOT run `swarm-eval`, do NOT generate `matplotlib` plots, and do NOT write multi-minute audit scripts! The exact non-wall, non-proved surgery targets are already listed in `./shared/gap_ledger.json` above. Complete your analysis and invoke `swarm-submit-hypothesis` within 3-5 tool calls!
 - **Primary Disparate Scientific Lens for This Wave**: **`{lens_name}`** — {lens_desc}
 - You may also draw from ANY other disparate field of science, physics, biology, chemistry, crystallography, pure math, or global research tradition that breaks our current plateau (`{stats['best_score']}`).
 
 1. **Cross-Field Analogical Discovery (`swarm-search` optional)**: Translate a rigorous structural principle, topological move, energy landscape, or growth/morphogenesis process from `{lens_name}` (or another distant scientific field) into an exact mathematical/algorithmic operator for our problem.
-2. **Derive 2 to 3 Genuinely Novel Cross-Domain Hypotheses**: Break the hidden assumptions of narrow in-domain methods (frozen discrete templates, rigid local basins, single-scale heuristics) on our highest-leverage non-wall anchors while avoiding every Tabu item.
-3. **Queue Your Novel Hypotheses via `swarm-propose`** (ordered reasoning -> novel insight -> mechanism -> title):
+2. **Author 2 to 3 Complete, Self-Contained Execution Specs (`swarm-submit-hypothesis`)**: Smaller Implementer models execute your specs directly—vague prose causes drift or empty builds! Specify exact files to read/create/edit, exact formulas & code structure, exact compile/run commands, and exact verification criteria:
    ```bash
-   swarm-propose --parent-id "{node['node_id']}" --island-id {island['island_id']} --role IMPLEMENT \\
-     --rationale "<first-principles derivation explaining why narrow in-domain methods plateau here and why the imported mechanism from {lens_name} breaks the barrier>" \\
-     --novel-insight "<source scientific discipline + hidden assumption broken + novel mathematical structure or move operator>" \\
-     --hypothesis "<precise mathematical construction and fast C++20/CUDA/Python solver algorithm to implement and test>" \\
-     --target-slice "<target non-wall anchor slice>" \\
-     --title "<concise 4-8 word novel mechanism title>"
+   swarm-submit-hypothesis --parent-id "{node['node_id']}" --island-id {island['island_id']} --role IMPLEMENT \\
+     --rationale "<WHY: first-principles derivation explaining why narrow methods plateau and why the imported mechanism from {lens_name} breaks the barrier>" \\
+     --novel-insight "<INSIGHT: source scientific discipline + hidden assumption broken + novel mathematical structure or move operator>" \\
+     --target-files "<WHERE: exact files to reuse (e.g. ./shared/packing_sdk.hpp) and exact files/functions to create or edit (e.g. ./solver.cpp, ./patch.json)>" \\
+     --exact-changes "<WHAT & HOW: explicit step-by-step equations, algorithm, data structures, compile command, and sweep parameters>" \\
+     --verification-plan "<VERIFY: exact command to run, explicit target puzzle IDs n=..., measurable pass/fail threshold, and swarm-check patch.json --apply>" \\
+     --target-slice "<SLICE: target non-wall anchor slice>" \\
+     --title "<TITLE: concise 4-8 word novel mechanism title>"
    ```
 """
         elif role == "DEBUG":
@@ -574,27 +590,43 @@ CRITICAL RULE: `vault/best` already unions per-instance JSON outputs automatical
 """
         else:
             # IMPLEMENT or DEEPEN
+            exec_spec: dict[str, Any] = {}
+            raw_spec = node.get("execution_spec_json")
+            if isinstance(raw_spec, str) and raw_spec.strip().startswith("{"):
+                try:
+                    parsed_sp = json.loads(raw_spec)
+                    if isinstance(parsed_sp, dict):
+                        exec_spec = parsed_sp
+                except json.JSONDecodeError:
+                    exec_spec = {}
+            spec_section = ""
+            if exec_spec:
+                spec_section = (
+                    "\n### [2] TARGET FILES (Where to Read / Create / Edit)\n"
+                    f"{exec_spec.get('target_files') or '(create a dedicated C++20/CUDA/Python solver file in workdir)'}\n\n"
+                    "### [3] EXACT CHANGES (What & How to Build — Follow Verbatim!)\n"
+                    f"{exec_spec.get('exact_changes') or node['hypothesis']}\n\n"
+                    "### [4] VERIFICATION PLAN (Exact Test Command & Acceptance Criterion)\n"
+                    f"{exec_spec.get('verification_plan') or f'Compile, run on target slice, verify via swarm-check patch.json --apply --candidate {copied_cand}, and swarm-submit.'}\n"
+                )
             insight_banner = (
-                f"\n### Core Novel Frontier Insight to Realize\n{node['novel_insight']}\n"
+                f"\n### [1] WHY — Core Novel Frontier Insight & Rationale\n"
+                f"**Novel Insight**: {node['novel_insight']}\n"
+                f"**Rationale**: {node['rationale']}\n"
                 if str(node.get("novel_insight") or "").strip()
-                else ""
+                else f"\n### [1] WHY — First-Principles Rationale\n{node['rationale']}\n"
             )
+            hyp_block = "" if exec_spec else f"\n### Hypothesis & Mechanism\n{node['hypothesis']}\n"
             task_prompt = f"""{common_context}
-## Your Assignment (`{role}` — Novel Mechanism Builder & Frontier Compounder)
+## Your Assignment (`{role}` — Standardized HypothesisExecutionSpec Builder)
 Title: **{node['title']}**
-{insight_banner}
-Hypothesis:
-{node['hypothesis']}
-
-First-Principles Rationale:
-{node['rationale']}
-
-CRITICAL FRONTIER RULE:
-- **NEVER write 'gap-falsification' or 'impossibility audit' reports!** Proved optima and `L=K` integer walls are already excluded from `./shared/gap_ledger.json`. Your job is **100% CONSTRUCTIVE SOLVER EXECUTION**: build and run a C++20/CUDA/Python solver that changes the **discrete contact topology** (new core size `a x b`, independent strip tilts `theta_1 != theta_2`, variable row pitches, or pair/cluster-rotation surgery under soft-overlap penalty homotopy `L_target = L - 0.003`) on the non-wall anchor puzzles in your slice!
-- Do NOT regress into generic textbook heuristics (blind random jitter, unguided SA cooling tweaks, or re-running unmodified baseline scripts):
-1. Implement the novel mathematical construction or coupled topology-surgery solver in C++20 (`g++ -O3 -fopenmp`, e.g. `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python targeting the non-wall anchor puzzles in your assigned slice, emitting improved subproblems into `patch.json`.
-2. Verify & merge in `<15ms` via `swarm-check patch.json --apply --candidate {copied_cand}` (diagnose exact active-contact/obstruction geometry from its feedback and refine your novel operator if needed!).
-3. Submit your verified candidate via `swarm-submit {copied_cand} --summary "<novel insight/operator built, what known barrier it broke, and verified score>"`!
+{insight_banner}{spec_section}{hyp_block}
+CRITICAL EXECUTION & FIDELITY RULES:
+- **FOLLOW THE SPEC FAITHFULLY**: Build and keep the EXACT files in `[2] TARGET FILES`, implement the EXACT algorithm in `[3] EXACT CHANGES`, and execute `[4] VERIFICATION PLAN`. Do NOT silently swap in a different algorithm and do NOT exit with zero solver files built!
+- **NEVER write 'gap-falsification' or 'impossibility audit' reports!** Proved optima and `L=K` integer walls are already excluded from `./shared/gap_ledger.json`.
+1. Implement the specified C++20 (`g++ -O3 -fopenmp`, e.g. `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python solver in your working directory, emitting improved subproblems into `patch.json`.
+2. Verify & merge in `<15ms` via `swarm-check patch.json --apply --candidate {copied_cand}` and run all verification checks in `[4] VERIFICATION PLAN`.
+3. Submit your verified candidate via `swarm-submit {copied_cand} --summary "SPEC_FILES=<files built>; MECHANISM=<exact spec implemented>; VERIFY=<measured test output & score>"`!
 """
         return system_prompt, task_prompt
 

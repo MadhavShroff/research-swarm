@@ -845,7 +845,7 @@ PY
             self.assertIn("FRONTIER NOVELTY & CROSS-DISCIPLINARY AXIOM", sys_p)
             self.assertIn("Known & Online Methods Cannot Win", task_p)
             self.assertIn("Cross-Disciplinary Transfer Across Science, Math, Physics, Biology", task_p)
-            self.assertIn("Core Novel Frontier Insight to Realize", task_p)
+            self.assertIn("Core Novel Frontier Insight & Rationale", task_p)
             self.assertIn("chirped curvature-varying", task_p)
             exp_id1, _, _ = db.create_node(island_id=0, role="EXPLORE", title="Cross-domain wave 1", parent_id=boot["baseline_node_id"], novelty_threshold=None)
             exp_id2, _, _ = db.create_node(island_id=0, role="EXPLORE", title="Cross-domain wave 2", parent_id=boot["baseline_node_id"], novelty_threshold=None)
@@ -874,6 +874,42 @@ PY
             claimed_imp = db.claim_next_queued_node(preferred_island=0, boost_explore=False)
             self.assertEqual(claimed_imp["node_id"], novel_id)
             self.assertNotEqual(claimed_imp["node_id"], auto_id)
+
+            # 5. Standardized `submit_hypothesis` (require_spec=True) rejects incomplete specs & renders full contract!
+            bad_spec = await svc.handle_propose({
+                "parent_id": boot["baseline_node_id"],
+                "island_id": 0,
+                "role": "IMPLEMENT",
+                "require_spec": True,
+                "rationale": "Short",
+                "title": "Incomplete proposal",
+            })
+            self.assertFalse(bad_spec["ok"])
+            self.assertFalse(bad_spec["accepted"])
+            self.assertIn("Missing", bad_spec["error"]) if "Missing" in bad_spec["error"] else self.assertIn("requires explicit", bad_spec["error"])
+
+            good_spec = await svc.handle_propose({
+                "parent_id": boot["baseline_node_id"],
+                "island_id": 0,
+                "role": "IMPLEMENT",
+                "require_spec": True,
+                "rationale": "Tetratic liquid-crystal grain-boundary shear breaks jammed single-angle contact graphs.",
+                "novel_insight": "Condensed-matter physics: oscillatory shear cycles + replica-exchange parallel tempering across soft-overlap temperatures.",
+                "target_files": "Read ./shared/packing_sdk.hpp; create ./tetratic_pt.cpp and emit ./patch.json.",
+                "exact_changes": "Implement 8-replica parallel tempering in tetratic_pt.cpp with oscillatory shear amplitude gamma=0.04 and soft-overlap stiffness lambda in [1e1..1e7], compiled with g++ -O3 -fopenmp.",
+                "verification_plan": "Run ./tetratic_pt on n=11,17,18,19,27,28,29; verify L_n < L_cur via swarm-check patch.json --apply.",
+                "target_slice": "N11..30_high_leverage_anchors",
+                "title": "Tetratic parallel-tempering shear unjammer",
+            })
+            self.assertTrue(good_spec["ok"])
+            self.assertTrue(good_spec["accepted"])
+            self.assertTrue(good_spec["has_execution_spec"])
+            spec_node = db.get_node(good_spec["child_node_id"])
+            s_sys, s_task = coord._build_prompts(spec_node, isl0, None)
+            self.assertIn("STANDARDIZED EXECUTION SPEC CONTRACT (HypothesisExecutionSpec)", s_sys)
+            self.assertIn("### [2] TARGET FILES (Where to Read / Create / Edit)", s_task)
+            self.assertIn("tetratic_pt.cpp", s_task)
+            self.assertIn("### [4] VERIFICATION PLAN (Exact Test Command & Acceptance Criterion)", s_task)
 
 
 if __name__ == "__main__":

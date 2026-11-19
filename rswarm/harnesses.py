@@ -137,23 +137,26 @@ MUX_LITE_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "propose_hypothesis",
+        "name": "submit_hypothesis",
         "description": (
-            "Propose a genuinely novel frontier hypothesis (beyond online/textbook methods) into the multiplying research tree. "
-            "Ordered reasoning -> novel_insight -> hypothesis -> target_slice -> title."
+            "Submit a standardized, complete HypothesisExecutionSpec to spawn an Implementer agent. "
+            "All execution fields (rationale, novel_insight, target_files, exact_changes, verification_plan, target_slice, title) "
+            "are REQUIRED so smaller implementers can apply the exact edits and tests without drift."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "rationale": {"type": "string", "description": "First-principles derivation of why known/online methods plateau on this slice."},
-                "novel_insight": {"type": "string", "description": "Exact hidden assumption broken + original mathematical structure, invariant, or operator invented."},
-                "hypothesis": {"type": "string", "description": "Concrete falsifiable mathematical formulation and C++/CUDA/Python algorithm to build."},
-                "target_slice": {"type": "string", "description": "Target unsolved regime or scale band."},
-                "title": {"type": "string", "description": "Concise 4-8 word novel mechanism title."},
+                "rationale": {"type": "string", "description": "WHY: First-principles reasoning explaining why known/online methods plateau and why this cross-disciplinary mechanism breaks the barrier."},
+                "novel_insight": {"type": "string", "description": "INSIGHT: Source scientific discipline + exact hidden assumption broken + novel mathematical structure or move operator."},
+                "target_files": {"type": "string", "description": "WHERE: Exact workspace files to read/reuse (e.g. ./shared/packing_sdk.hpp) and exact files/functions to create or edit (e.g. ./solver.cpp, ./patch.json)."},
+                "exact_changes": {"type": "string", "description": "WHAT & HOW: Complete step-by-step mathematical formulas, data structures, code/edit instructions, compile command, and parameter sweep."},
+                "verification_plan": {"type": "string", "description": "VERIFY: Exact test command(s), explicit puzzle/instance IDs to test, measurable pass/fail criterion, and swarm-check/swarm-submit step."},
+                "target_slice": {"type": "string", "description": "SLICE: Exact non-wall anchor slice or subproblem IDs to attack."},
+                "title": {"type": "string", "description": "TITLE: Concise 4-8 word novel mechanism label."},
                 "island_id": {"type": "integer", "description": "Optional target island ID."},
                 "role": {"type": "string", "description": "Target role (default: IMPLEMENT)."},
             },
-            "required": ["rationale", "novel_insight", "hypothesis", "title"],
+            "required": ["rationale", "novel_insight", "target_files", "exact_changes", "verification_plan", "target_slice", "title"],
         },
     },
     {
@@ -308,7 +311,7 @@ class HarnessRunner:
         api_ms = max(1800000, int(http_timeout_sec) * 1000)
         session_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"rswarm:{self.workspace_dir}:{node_id}"))
 
-        is_proposer = ("swarm-propose" in task_prompt) and ("swarm-submit" not in task_prompt)
+        is_proposer = (("swarm-propose" in task_prompt) or ("swarm-submit-hypothesis" in task_prompt)) and ("swarm-submit " not in task_prompt)
         resume_msg = (
             "Session resumed after timeout or rate-limit wait. "
             "Do NOT run `swarm-eval`, do NOT generate plots, and do NOT run new long scans—"
@@ -467,7 +470,7 @@ exit "$RC"
         script_file = workdir / ".rswarm_agy_exec.sh"
         exit_file = workdir / ".rswarm_exit"
 
-        is_proposer = ("swarm-propose" in task_prompt) and ("swarm-submit" not in task_prompt)
+        is_proposer = (("swarm-propose" in task_prompt) or ("swarm-submit-hypothesis" in task_prompt)) and ("swarm-submit " not in task_prompt)
         prompt_file.write_text(f"{system_prompt}\n\n{task_prompt}")
         resume_file.write_text(
             "Session resumed after timeout or rate-limit wait. "
@@ -786,16 +789,29 @@ exec nice -n 15 {rendered}
                 )
                 return json.dumps(res, indent=2)[:24000]
 
-            if name == "propose_hypothesis":
-                cmd_parts = [
-                    "swarm-propose",
-                    "--rationale", str(inp.get("rationale") or ""),
-                    "--novel-insight", str(inp.get("novel_insight") or ""),
-                    "--hypothesis", str(inp.get("hypothesis") or ""),
-                    "--target-slice", str(inp.get("target_slice") or ""),
-                    "--title", str(inp.get("title") or "Novel Hypothesis"),
-                    "--role", str(inp.get("role") or "IMPLEMENT"),
-                ]
+            if name in ("submit_hypothesis", "propose_hypothesis"):
+                if name == "submit_hypothesis":
+                    cmd_parts = [
+                        "swarm-submit-hypothesis",
+                        "--rationale", str(inp.get("rationale") or ""),
+                        "--novel-insight", str(inp.get("novel_insight") or ""),
+                        "--target-files", str(inp.get("target_files") or ""),
+                        "--exact-changes", str(inp.get("exact_changes") or ""),
+                        "--verification-plan", str(inp.get("verification_plan") or ""),
+                        "--target-slice", str(inp.get("target_slice") or ""),
+                        "--title", str(inp.get("title") or "Novel Hypothesis"),
+                        "--role", str(inp.get("role") or "IMPLEMENT"),
+                    ]
+                else:
+                    cmd_parts = [
+                        "swarm-propose",
+                        "--rationale", str(inp.get("rationale") or ""),
+                        "--novel-insight", str(inp.get("novel_insight") or ""),
+                        "--hypothesis", str(inp.get("hypothesis") or ""),
+                        "--target-slice", str(inp.get("target_slice") or ""),
+                        "--title", str(inp.get("title") or "Novel Hypothesis"),
+                        "--role", str(inp.get("role") or "IMPLEMENT"),
+                    ]
                 if inp.get("island_id") is not None:
                     cmd_parts.extend(["--island-id", str(int(inp["island_id"]))])
                 env = self._build_agent_env(node_id, workdir=workdir)
