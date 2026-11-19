@@ -27,6 +27,50 @@ from .models import (
 from .rpc import EvalAndTreeService
 from .tmux_pool import TmuxPool
 
+# Rotating disparate scientific, mathematical, physical, biological, and global discovery lenses.
+CROSS_DISCIPLINARY_LENSES: tuple[tuple[str, str], ...] = (
+    (
+        "Condensed-Matter & Soft-Matter Physics",
+        "Liquid-crystal tetratic/nematic phase transitions, Kosterlitz-Thouless topological defect unbinding, "
+        "grain-boundary migration, shear-cycle unjamming, and spin-glass replica-exchange parallel tempering.",
+    ),
+    (
+        "Developmental Biology, Biophysics & Active Matter",
+        "Epithelial tissue T1 topological neighbor-swap vertex models, morphogenesis / growth-from-zero (r: 0 -> 1) inside fixed bounds, "
+        "phyllotaxis & biological self-assembly, protein-folding funnel metadynamics, and active-matter collective swarming.",
+    ),
+    (
+        "Crystallography, Materials Science & Quasicrystals",
+        "Higher-dimensional cut-and-project quasicrystals (Ammann-Beenker / Penrose), martensitic twinning planes, "
+        "dislocations & Burgers vectors, polycrystalline Voronoi-Laguerre tessellations, and annealing twins.",
+    ),
+    (
+        "Pure Mathematics, Algebraic Topology & Differential Geometry",
+        "Riemannian / Lie-group optimization (SE(2)^n / SO(n)), persistent homology of void & obstruction complexes, "
+        "symplectic / Hamiltonian dynamics, tropical / min-plus geometry, and spectral graph theory on active contact networks.",
+    ),
+    (
+        "Statistical Mechanics, Chemistry & Molecular Dynamics",
+        "Event-driven hard-particle molecular dynamics (Lubachevsky-Stillinger compression), metadynamics & umbrella sampling "
+        "over free-energy barriers, basin-hopping, and non-local cluster-flip (Swendsen-Wang / Wolff) Monte Carlo.",
+    ),
+    (
+        "Control Theory, Semidefinite Programming & Operations Research",
+        "Sum-of-squares (SOS) & semidefinite relaxations, bilevel / Lagrangian dual decomposition, "
+        "augmented-Lagrangian active-set KKT flows, and mixed-integer non-convex branch-and-cut.",
+    ),
+    (
+        "Fluid Mechanics, Optimal Transport & Continuum Mechanics",
+        "Wasserstein optimal transport, stress-tensor homogenization, elastic buckling eigenmodes, "
+        "and Turing reaction-diffusion morphogenesis instabilities.",
+    ),
+    (
+        "Global Cross-Tradition Scientific Literature",
+        "Cross-field methods outside narrow English CS/ML silos—mine Russian, Japanese, Chinese, and European "
+        "mathematical physics, crystallography, and operations research via `swarm-search` to import unseen structures.",
+    ),
+)
+
 
 class SwarmCoordinator:
     """Orchestrates parallel Researchers, Implementers, Debuggers, and Synthesizers."""
@@ -69,6 +113,7 @@ class SwarmCoordinator:
         self.started_at: float = time.time()
         self._island_rr: int = 0
         self._slice_rr: int = 0
+        self._lens_rr: int = 0
         self._model_cooldown_until: dict[str, float] = {}
         self._model_rl_streak: dict[str, int] = {}
         self._last_rescue_check: float = 0.0
@@ -279,6 +324,12 @@ class SwarmCoordinator:
             pass
         return digest
 
+    def _next_science_lens(self, node: dict[str, Any], island: dict[str, Any]) -> tuple[str, str]:
+        """Select a disparate cross-disciplinary scientific lens, rotating across physics, biology, math, materials, and global traditions."""
+        idx = (self._lens_rr + int(island.get("island_id") or 0)) % len(CROSS_DISCIPLINARY_LENSES)
+        self._lens_rr += 1
+        return CROSS_DISCIPLINARY_LENSES[idx]
+
     def _next_target_slice(self) -> str:
         ledger_p = self.ws / "shared" / "gap_ledger.json"
         if ledger_p.is_file():
@@ -327,9 +378,9 @@ class SwarmCoordinator:
             f"(direction={self.cfg.direction}, baseline={stats['baseline_score']}, "
             f"current_global_best={stats['best_score']} [{stats['best_speedup']:.4f}x], "
             f"target_to_beat={stats['leaderboard_target']}).\n"
-            "FRONTIER NOVELTY AXIOM: Online, textbook, and published methods CANNOT evolve the frontier—every known public method "
-            "is already absorbed into the competitive floor. Treat literature (`swarm-search` / `./shared/literature/`) strictly as a "
-            "boundary map of where known methods fail, break their hidden assumptions, and invent genuinely novel insights and algorithms.\n"
+            "FRONTIER NOVELTY & CROSS-DISCIPLINARY AXIOM: Online, textbook, and narrow in-domain methods CANNOT evolve the frontier—every known public method "
+            "is already absorbed into the competitive floor. Dive into diverse and disparate fields of science, mathematics, physics, biology, materials science, "
+            "and global research traditions to import original mathematical structures, invariants, and operators that break the hidden assumptions of prior art.\n"
             f"Your Node ID is `{node['node_id']}` on Research Island #{island['island_id']} (`{island['name']}`).\n"
             "CLI skills on your PATH: `swarm-search`, `swarm-fetch`, `swarm-check`, `swarm-eval`, `swarm-propose`, `swarm-submit`, `swarm-directive`, `swarm-island`, `swarm-hosted-submit`.\n"
             f"Never modify `eval/` (it is read-only) and do NOT read `{engine_root}` engine internals."
@@ -429,10 +480,11 @@ Focus: {island['strategy_focus']}
 {lb1_line}{solvers_hint}{gap_line}- Starting Candidate in your workdir: `{copied_cand if copied_cand else './candidate/'}`{seed_note}
 
 {ws_map_block}{dir_block}{slice_block}{ledger_block}{tabu_block}{offload_block}
-## FRONTIER NOVELTY & IDEAL-BACKTRACKING DOCTRINE (Known Methods Are the Floor, Never the Frontier!)
+## FRONTIER NOVELTY & CROSS-DISCIPLINARY DISCOVERY DOCTRINE
 1. **Known & Online Methods Cannot Win**: Assume every published construction, public notebook, survey table, and textbook heuristic (generic SA, blind random jitter, unmodified catalog templates) is already exhausted by competitors. Re-implementing known methods only reproduces the public floor—it will NEVER advance the frontier.
-2. **Literature as an Assumption-Breaking Map**: Use `./shared/literature/` and `swarm-search` strictly to diagnose *why* known methods plateau (e.g., hidden symmetry assumptions, uniform-angle restrictions, decoupled local moves, or premature discretization)—and NEVER mistake an empirical "published best-known" table for a mathematical optimum unless a formal lower-bound proof guarantees `reducible_gap == 0`.
-3. **First-Principles Novel Leaps**: Work backward from the mathematical Ideal bound, break the limiting assumption of prior art, invent an original parameterization, invariant, relaxation, or coupled operator, and validate rapidly via `swarm-check patch.json --apply`.
+2. **Cross-Disciplinary Transfer Across Science, Math, Physics, Biology & Global Traditions**: Do NOT stay trapped inside one narrow subfield! Actively translate rigorous mechanisms from condensed-matter physics (tetratic liquid crystals, parallel tempering, shear unjamming, Lubachevsky-Stillinger MD), developmental biology & biophysics (epithelial T1 topological swaps, growth-from-zero morphogenesis, protein-folding metadynamics), crystallography (quasicrystals, martensitic twinning), algebraic topology (persistent homology, Lie-group SE(2) flows), optimal transport, and international research traditions via `swarm-search`.
+3. **Literature as an Assumption-Breaking Map**: Use `./shared/literature/` and `swarm-search` across physics, biology, math, and global papers strictly to import orthogonal mechanisms and diagnose which hidden assumption traps narrow in-domain solvers—NEVER mistake an empirical public record for a mathematical optimum without a formal lower-bound proof.
+4. **First-Principles Novel Leaps**: Break the limiting assumption of prior art, invent an original parameterization, invariant, topological move operator, or coupled relaxation, and validate rapidly via `swarm-check patch.json --apply`.
 
 ## Live Breakthrough & Obstruction Bulletin (Learn from Sibling Streams!)
 {chr(10).join(bul_lines)}
@@ -441,9 +493,11 @@ Focus: {island['strategy_focus']}
         if role == "META":
             telem = self.db.compile_meta_telemetry()
             active_isl_ids = [int(i["island_id"]) for i in self.db.get_islands()]
+            lens_name, lens_desc = self._next_science_lens(node, island)
             task_prompt = f"""{common_context}
-## Your Assignment (`META` — Autonomous Frontier Paradigm Architect & Assumption Breaker)
-You are triggered by the swarm's self-audit loop to detect known-method convergence, break limiting mathematical assumptions, evolve genuinely new paradigm islands, and dispatch novel frontier leaps beyond `{lb1 or stats['leaderboard_target']}`.
+## Your Assignment (`META` — Autonomous Cross-Disciplinary Paradigm Architect & Assumption Breaker)
+STRICT DISCIPLINE: Do NOT run `swarm-eval`, do NOT write `matplotlib` plots, and do NOT run multi-minute audits! Complete your cross-disciplinary synthesis and call `swarm-island` / `swarm-directive` / `swarm-propose` within 3-5 tool calls!
+- **Assigned Cross-Disciplinary Scientific Lens for This Audit**: **`{lens_name}`** — {lens_desc}
 
 ### Live Quantitative Swarm Telemetry
 ```json
@@ -451,37 +505,39 @@ You are triggered by the swarm's self-audit loop to detect known-method converge
 ```
 
 ### Core Objectives:
-1. **Audit Prior-Art & Swarm Convergence**: Inspect `recent_wins`, `recent_obstructions`, `./shared/literature/`, and (if needed) `swarm-search` / `swarm-fetch` to identify where current `./solvers_vault/` solvers and published online methods hit a structural wall. Never declare an empirical public record "optimal" without a formal mathematical lower-bound proof!
-2. **Evolve Orthogonal Novel Islands (`swarm-island`)**: If any active island has `consecutive_obstructions >= 10` OR you identify an unexplored mathematical representation/insight absent from active islands `{active_isl_ids}`, spawn a new paradigm island centered on breaking a specific assumption of known methods:
+1. **Break Subfield Tunnel Vision (`swarm-search`)**: Inspect `recent_wins`, `recent_obstructions`, and search across disparate scientific domains (`{lens_name}`, physics, biology, crystallography, topology, global literature) to import mathematical operators completely absent from our current islands `{active_isl_ids}`.
+2. **Evolve Disparate Cross-Domain Islands (`swarm-island`)**: If any active island has `consecutive_obstructions >= 10` OR all active islands are clustered in one narrow domain, spawn a genuinely orthogonal cross-disciplinary island:
    ```bash
-   swarm-island --name "<2-3-word-slug>" --focus "<broken assumption of known methods + novel mathematical representation and algorithm>"
+   swarm-island --name "<2-3-word-slug>" --focus "<disparate scientific domain + broken assumption + concrete mathematical operator/algorithm>"
    ```
-3. **Pin Frontier Directive (`swarm-directive`) & Propose 3-4 Novel Sharded Hypotheses (`swarm-propose`)** (order reasoning -> novel insight -> mechanism -> title):
+3. **Pin Cross-Disciplinary Directive (`swarm-directive`) & Propose 3-4 Novel Sharded Hypotheses (`swarm-propose`)** (order reasoning -> novel insight -> mechanism -> title):
    ```bash
-   swarm-directive --directive "<high-leverage strategic shift: which known-method traps to stop repeating and which novel mathematical mechanisms + gap slices to attack>"
+   swarm-directive --directive "<high-leverage cross-disciplinary shift: which narrow in-domain traps to drop and which physics/biology/math/global mechanisms + non-wall anchors to attack>"
    swarm-propose --island-id <active_island_id> --role IMPLEMENT \\
-     --rationale "<first-principles analysis of why online/known methods and current vault solvers plateau on this slice>" \\
-     --novel-insight "<the hidden assumption broken + genuinely new mathematical insight, invariant, or operator invented>" \\
-     --hypothesis "<concrete falsifiable mathematical formulation and C++/CUDA/Python algorithm to build>" \\
-     --target-slice "<specific unsolved regime or scale band>" \\
+     --rationale "<first-principles analysis of why narrow in-domain methods plateau and how a mechanism from {lens_name} or another scientific field breaks this barrier>" \\
+     --novel-insight "<source scientific field + exact hidden assumption broken + original mathematical structure or operator invented>" \\
+     --hypothesis "<concrete falsifiable mathematical formulation and C++/CUDA/Python solver to build>" \\
+     --target-slice "<specific non-wall anchor slice>" \\
      --title "<concise 4-8 word novel mechanism title>"
    ```
 """
         elif role == "EXPLORE":
+            lens_name, lens_desc = self._next_science_lens(node, island)
             task_prompt = f"""{common_context}
-## Your Assignment (`EXPLORE` — First-Principles Frontier Theorist & Novel-Leap Creator)
+## Your Assignment (`EXPLORE` — Cross-Disciplinary Frontier Theorist & Novel-Leap Creator)
 STRICT DISCIPLINE: Do NOT run `swarm-eval`, do NOT generate `matplotlib` plots, and do NOT write multi-minute audit scripts! The exact non-wall, non-proved surgery targets are already listed in `./shared/gap_ledger.json` above. Complete your analysis and invoke `swarm-propose` within 3-5 tool calls!
-Your sole mission is to **invent genuinely novel mathematical and algorithmic leaps** that advance the frontier beyond online/published methods and our current global best (`{stats['best_score']}`).
+- **Primary Disparate Scientific Lens for This Wave**: **`{lens_name}`** — {lens_desc}
+- You may also draw from ANY other disparate field of science, physics, biology, chemistry, crystallography, pure math, or global research tradition that breaks our current plateau (`{stats['best_score']}`).
 
-1. **Map & Break Known-Method Assumptions**: Optionally run a targeted `swarm-search` (or check `./shared/literature/`) ONLY to verify what known constructions already do and pinpoint the exact hidden assumption (e.g., uniform pitch/angle, rigid strip decomposition, uncoupled local perturbation, or suboptimal relaxation) that causes known methods to stall.
-2. **Derive 2 to 3 Original Insights from First Principles**: Work backward from the mathematical Ideal bound on our highest-yield unsolved slices. Invent new mathematical structures, parameterizations, coupled multi-body operators, dual/spectral/algebraic formulations, or non-uniform constructions that **do not exist in standard textbooks or public notebooks** and avoid every Tabu item.
+1. **Cross-Field Analogical Discovery (`swarm-search` optional)**: Translate a rigorous structural principle, topological move, energy landscape, or growth/morphogenesis process from `{lens_name}` (or another distant scientific field) into an exact mathematical/algorithmic operator for our problem.
+2. **Derive 2 to 3 Genuinely Novel Cross-Domain Hypotheses**: Break the hidden assumptions of narrow in-domain methods (frozen discrete templates, rigid local basins, single-scale heuristics) on our highest-leverage non-wall anchors while avoiding every Tabu item.
 3. **Queue Your Novel Hypotheses via `swarm-propose`** (ordered reasoning -> novel insight -> mechanism -> title):
    ```bash
    swarm-propose --parent-id "{node['node_id']}" --island-id {island['island_id']} --role IMPLEMENT \\
-     --rationale "<first-principles derivation showing why known/online methods plateau here and how much reducible gap is unlocked>" \\
-     --novel-insight "<exact assumption of known methods broken + the novel mathematical insight or representation invented>" \\
+     --rationale "<first-principles derivation explaining why narrow in-domain methods plateau here and why the imported mechanism from {lens_name} breaks the barrier>" \\
+     --novel-insight "<source scientific discipline + hidden assumption broken + novel mathematical structure or move operator>" \\
      --hypothesis "<precise mathematical construction and fast C++20/CUDA/Python solver algorithm to implement and test>" \\
-     --target-slice "<target unsolved regime or scale band>" \\
+     --target-slice "<target non-wall anchor slice>" \\
      --title "<concise 4-8 word novel mechanism title>"
    ```
 """

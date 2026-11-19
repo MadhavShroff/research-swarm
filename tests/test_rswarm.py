@@ -839,13 +839,20 @@ PY
             self.assertIn("chirped curvature-varying", novel_node["novel_insight"])
             self.assertGreater(float(novel_node["novelty_score"]), 0.5)
 
-            # 2. Verify prompts embed FRONTIER NOVELTY AXIOM and Core Novel Frontier Insight!
+            # 2. Verify prompts embed FRONTIER NOVELTY & CROSS-DISCIPLINARY AXIOM, Core Novel Insight, and rotating science lenses!
             isl0 = db.get_islands()[0]
             sys_p, task_p = coord._build_prompts(novel_node, isl0, None)
-            self.assertIn("FRONTIER NOVELTY AXIOM", sys_p)
+            self.assertIn("FRONTIER NOVELTY & CROSS-DISCIPLINARY AXIOM", sys_p)
             self.assertIn("Known & Online Methods Cannot Win", task_p)
+            self.assertIn("Cross-Disciplinary Transfer Across Science, Math, Physics, Biology", task_p)
             self.assertIn("Core Novel Frontier Insight to Realize", task_p)
             self.assertIn("chirped curvature-varying", task_p)
+            exp_id1, _, _ = db.create_node(island_id=0, role="EXPLORE", title="Cross-domain wave 1", parent_id=boot["baseline_node_id"], novelty_threshold=None)
+            exp_id2, _, _ = db.create_node(island_id=0, role="EXPLORE", title="Cross-domain wave 2", parent_id=boot["baseline_node_id"], novelty_threshold=None)
+            _, ep1 = coord._build_prompts(db.get_node(exp_id1), isl0, None)
+            _, ep2 = coord._build_prompts(db.get_node(exp_id2), isl0, None)
+            self.assertIn("Primary Disparate Scientific Lens for This Wave", ep1)
+            self.assertNotEqual(ep1, ep2)
 
             # 3. Verify boost_explore=True claims freshest EXPLORE ahead of IMPLEMENT so researchers never starve!
             for idx in range(5):

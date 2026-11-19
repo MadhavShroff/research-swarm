@@ -194,7 +194,7 @@ swarm-hosted-submit <candidate_path> --note "Brief description of breakthrough"
 Advance the mathematical and algorithmic frontier **far beyond Leaderboard #1**.
 - Optimization direction: **`{cfg.direction}`**
 - Milestone / Leaderboard Target: **`{cfg.leaderboard_target}`**
-- **Frontier Novelty Axiom**: Online papers, survey tables, public notebooks, and textbook heuristics are *only the competitive floor*—they CANNOT evolve the frontier. Use literature (`swarm-search` / `./shared/literature/`) strictly as a **boundary map** to see what hidden assumption traps known methods, then **break that assumption with original mathematical insights and novel operators**. Never treat an empirical public record as optimal without a formal lower-bound proof.
+- **Frontier Novelty & Cross-Disciplinary Axiom**: Online papers, survey tables, public notebooks, and narrow in-domain heuristics are *only the competitive floor*—they CANNOT evolve the frontier. Actively dive into disparate fields of science, mathematics, physics (condensed matter, liquid crystals, parallel tempering, event-driven MD), biology (morphogenesis, epithelial T1 swaps, protein-folding metadynamics), crystallography (quasicrystals, twinning), topology, optimal transport, and global research traditions via `swarm-search` to import original mathematical structures and operators. Never treat an empirical public record as optimal without a formal lower-bound proof.
 
 ## Problem Brief
 {cfg.brief}
