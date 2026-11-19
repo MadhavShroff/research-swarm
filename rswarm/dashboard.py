@@ -1530,6 +1530,22 @@ class DashboardServer:
             elif path == "/api/state":
                 body = json.dumps(self._build_state_payload()).encode("utf-8")
                 self._write_resp(writer, 200, "application/json", body)
+            elif path == "/api/submission.csv":
+                sub_f = self.ws / "vault" / "hosted_outbox" / "submission.csv"
+                if not sub_f.is_file():
+                    self._write_resp(writer, 404, "text/plain", b"No staged submission.csv found")
+                else:
+                    raw_csv = sub_f.read_bytes()
+                    hdr = (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/csv; charset=utf-8\r\n"
+                        'Content-Disposition: attachment; filename="submission.csv"\r\n'
+                        f"Content-Length: {len(raw_csv)}\r\n"
+                        "Cache-Control: no-store\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode("ascii")
+                    writer.write(hdr)
+                    writer.write(raw_csv)
             elif path.startswith("/api/node/"):
                 nid = path[len("/api/node/") :].strip("/")
                 node = self.db.get_node(nid)
