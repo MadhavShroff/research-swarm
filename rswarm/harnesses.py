@@ -308,12 +308,20 @@ class HarnessRunner:
         api_ms = max(1800000, int(http_timeout_sec) * 1000)
         session_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"rswarm:{self.workspace_dir}:{node_id}"))
 
-        prompt_file.write_text(task_prompt)
-        resume_file.write_text(
+        is_proposer = ("swarm-propose" in task_prompt) and ("swarm-submit" not in task_prompt)
+        resume_msg = (
             "Session resumed after timeout or rate-limit wait. "
-            "All files in your working directory and your prior steps are intact. "
-            "Continue immediately from where you left off, run `swarm-eval`, and `swarm-submit` your candidate."
+            "Do NOT run `swarm-eval`, do NOT generate plots, and do NOT run new long scans—"
+            "immediately invoke `swarm-propose` (and `swarm-directive` if META) to queue your 2-3 novel hypotheses and exit!"
+            if is_proposer
+            else (
+                "Session resumed after timeout or rate-limit wait. "
+                "All files in your working directory and your prior steps are intact. "
+                "Continue immediately from where you left off, run `swarm-check` / `swarm-eval`, and `swarm-submit` your candidate."
+            )
         )
+        prompt_file.write_text(task_prompt)
+        resume_file.write_text(resume_msg)
         sys_file.write_text(system_prompt)
 
         # Source llm-provider-proxy.env inside bash so proxy token never appears in ps/tmux argv!
@@ -459,11 +467,18 @@ exit "$RC"
         script_file = workdir / ".rswarm_agy_exec.sh"
         exit_file = workdir / ".rswarm_exit"
 
+        is_proposer = ("swarm-propose" in task_prompt) and ("swarm-submit" not in task_prompt)
         prompt_file.write_text(f"{system_prompt}\n\n{task_prompt}")
         resume_file.write_text(
             "Session resumed after timeout or rate-limit wait. "
-            "All files in your working directory and your prior steps are intact. "
-            "Continue immediately from where you left off, run `swarm-eval`, and `swarm-submit` your candidate."
+            "Do NOT run `swarm-eval`, do NOT generate plots, and do NOT run new long scans—"
+            "immediately invoke `swarm-propose` (and `swarm-directive` if META) to queue your 2-3 novel hypotheses and exit!"
+            if is_proposer
+            else (
+                "Session resumed after timeout or rate-limit wait. "
+                "All files in your working directory and your prior steps are intact. "
+                "Continue immediately from where you left off, run `swarm-check` / `swarm-eval`, and `swarm-submit` your candidate."
+            )
         )
         parser_file.write_text(
             """import json, os, sys, time

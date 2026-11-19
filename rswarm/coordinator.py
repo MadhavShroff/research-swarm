@@ -280,19 +280,19 @@ class SwarmCoordinator:
         return digest
 
     def _next_target_slice(self) -> str:
+        ledger_p = self.ws / "shared" / "gap_ledger.json"
+        if ledger_p.is_file():
+            try:
+                ld = json.loads(ledger_p.read_text())
+                raw_s = ld.get("recommended_slices") or []
+                if isinstance(raw_s, list) and raw_s:
+                    pick = raw_s[self._slice_rr % len(raw_s)]
+                    self._slice_rr += 1
+                    return str(pick)
+            except Exception:
+                pass
         slices = self.db.get_gap_slices()
         if not slices:
-            ledger_p = self.ws / "shared" / "gap_ledger.json"
-            if ledger_p.is_file():
-                try:
-                    ld = json.loads(ledger_p.read_text())
-                    raw_s = ld.get("recommended_slices") or []
-                    if isinstance(raw_s, list) and raw_s:
-                        pick = raw_s[self._slice_rr % len(raw_s)]
-                        self._slice_rr += 1
-                        return str(pick)
-                except Exception:
-                    pass
             return ""
         top_k = slices[: min(6, len(slices))]
         chosen = top_k[self._slice_rr % len(top_k)]
@@ -470,7 +470,7 @@ You are triggered by the swarm's self-audit loop to detect known-method converge
         elif role == "EXPLORE":
             task_prompt = f"""{common_context}
 ## Your Assignment (`EXPLORE` — First-Principles Frontier Theorist & Novel-Leap Creator)
-Workspace index, Gap Ledger, and Tabu Obstructions are already above—do not spend turns running `ls` on workspace boilerplate.
+STRICT DISCIPLINE: Do NOT run `swarm-eval`, do NOT generate `matplotlib` plots, and do NOT write multi-minute audit scripts! The exact non-wall, non-proved surgery targets are already listed in `./shared/gap_ledger.json` above. Complete your analysis and invoke `swarm-propose` within 3-5 tool calls!
 Your sole mission is to **invent genuinely novel mathematical and algorithmic leaps** that advance the frontier beyond online/published methods and our current global best (`{stats['best_score']}`).
 
 1. **Map & Break Known-Method Assumptions**: Optionally run a targeted `swarm-search` (or check `./shared/literature/`) ONLY to verify what known constructions already do and pinpoint the exact hidden assumption (e.g., uniform pitch/angle, rigid strip decomposition, uncoupled local perturbation, or suboptimal relaxation) that causes known methods to stall.
@@ -533,8 +533,10 @@ Hypothesis:
 First-Principles Rationale:
 {node['rationale']}
 
-CRITICAL FRONTIER RULE: Do NOT regress into generic textbook heuristics (blind random jitter, unguided SA cooling tweaks, or re-running unmodified baseline scripts)—known methods cannot move this frontier! Realize the **novel mathematical mechanism** above, reusing low-level fast primitives in `./solvers_vault/` and `./shared/` so all your effort goes into the new math/algorithm:
-1. Implement the novel mathematical construction or coupled solver in C++20 (`g++ -O3 -fopenmp`, e.g. `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python targeting your assigned slice, emitting improved subproblems into `patch.json`.
+CRITICAL FRONTIER RULE:
+- **NEVER write 'gap-falsification' or 'impossibility audit' reports!** Proved optima and `L=K` integer walls are already excluded from `./shared/gap_ledger.json`. Your job is **100% CONSTRUCTIVE SOLVER EXECUTION**: build and run a C++20/CUDA/Python solver that changes the **discrete contact topology** (new core size `a x b`, independent strip tilts `theta_1 != theta_2`, variable row pitches, or pair/cluster-rotation surgery under soft-overlap penalty homotopy `L_target = L - 0.003`) on the non-wall anchor puzzles in your slice!
+- Do NOT regress into generic textbook heuristics (blind random jitter, unguided SA cooling tweaks, or re-running unmodified baseline scripts):
+1. Implement the novel mathematical construction or coupled topology-surgery solver in C++20 (`g++ -O3 -fopenmp`, e.g. `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python targeting the non-wall anchor puzzles in your assigned slice, emitting improved subproblems into `patch.json`.
 2. Verify & merge in `<15ms` via `swarm-check patch.json --apply --candidate {copied_cand}` (diagnose exact active-contact/obstruction geometry from its feedback and refine your novel operator if needed!).
 3. Submit your verified candidate via `swarm-submit {copied_cand} --summary "<novel insight/operator built, what known barrier it broke, and verified score>"`!
 """
