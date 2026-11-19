@@ -17,24 +17,24 @@ from .tmux_pool import TmuxPool
 
 DEFAULT_ISLANDS: list[dict[str, str]] = [
     {
-        "name": "algebraic-exact",
-        "strategy_focus": "Closed-form constructions, lattice/crystallographic tilings, exact geometric invariants, and symmetry bounds.",
+        "name": "ideal-parametric",
+        "strategy_focus": "Work backward from the theoretical Ideal bound to derive universal closed-form/parametric families spanning ALL problem scales at once.",
     },
     {
-        "name": "continuous-opt",
-        "strategy_focus": "Smooth penalty relaxations, L-BFGS / Adam / gradient homotopies, and analytic overlap Jacobians.",
+        "name": "upward-flow",
+        "strategy_focus": "Initialize inside the infeasible Ideal bound and relax constraint violations upward via O(n) spatial-hash FIRE, L-BFGS, or analytical Jacobians.",
     },
     {
-        "name": "metaheuristic-sa",
-        "strategy_focus": "Simulated annealing, basin hopping, Ruin-and-Recreate, adaptive move schedules, and multi-start search.",
+        "name": "gpu-parallel",
+        "strategy_focus": "Batched CUDA/OpenMP multi-replica sweeps across entire instance cohorts simultaneously to overcome coordinated multi-body barriers.",
     },
     {
         "name": "combinatorial-dp",
-        "strategy_focus": "Hierarchical decomposition, strip/shelf/guillotine recurrences, branch-and-bound, and SAT/MIP pruning.",
+        "strategy_focus": "Exact hierarchical decomposition, strip/staircase/guillotine recurrences, branch-and-bound, and symmetry-breaking pruning across full scale.",
     },
     {
-        "name": "hybrid-polish",
-        "strategy_focus": "Cross-N transfer, squeeze/compaction post-optimizers, boundary repair, and multi-solver ensembles.",
+        "name": "active-compaction",
+        "strategy_focus": "Cross-scale warm-start transfer, sequential LP / active-set contact compaction, and multi-solver ensemble synthesis.",
     },
 ]
 
@@ -182,10 +182,12 @@ Solve the problem below and **far exceed the best leaderboard performance**.
 3. **`swarm-submit <candidate_path> --summary "..." [--request-hosted]`** — Submit your best verified candidate for Vault promotion, Bulletin broadcast, and tree expansion.
 4. **`swarm-hosted-submit <candidate_path> --note "..."`** — Request hosted leaderboard evaluation (quota-guarded).
 
-## Rules
-- Work strictly inside your assigned current working directory (`./candidate/` or local files).
-- `eval/` is read-only. Never attempt to modify or bypass `eval/local_eval.sh`.
-- Always verify with `swarm-eval` before calling `swarm-submit`.
+## Ideal-Backtracking & Compounding Rules
+- Work strictly inside your assigned working directory (`./candidate/` or local files).
+- Inspect `./solvers_vault/` and `./shared/` first to reuse and extend proven winning C++20/OpenMP/CUDA solvers rather than starting from scratch.
+- Work **backward from the Ideal lower/upper bound**: target universal parametric constructions and collective continuous-flow solvers across the **entire problem scale** (never toy single-instance scripts), ignoring provably rigid optima (`reducible_gap == 0`).
+- `eval/` is read-only. Never attempt to modify or bypass `eval/local_eval.sh` or `eval/merge_pool.sh`.
+- Always verify with `swarm-eval` and submit via `swarm-submit`.
 """
     (ws / "CLAUDE.md").write_text(charter)
     (ws / "AGENTS.md").write_text(charter)
@@ -212,12 +214,13 @@ async def bootstrap_workspace(
     *,
     local_eval_src: str | None = None,
     hosted_eval_src: str | None = None,
+    merge_pool_src: str | None = None,
     baseline_src: str | None = None,
     force_rebuild: bool = False,
 ) -> dict[str, Any]:
     """Create workspace layout, install skills, synthesize or plug in test harnesses, and lock baseline."""
     ws = Path(cfg.workspace_dir).resolve()
-    for sub in ("eval", "vault/baseline", "vault/best", "shared", "work", "logs", "state", "bin"):
+    for sub in ("eval", "vault/baseline", "vault/best", "vault/solvers", "shared", "work", "logs", "state", "bin"):
         (ws / sub).mkdir(parents=True, exist_ok=True)
 
     (ws / "swarm.json").write_text(json.dumps(cfg.to_dict(), indent=2))
@@ -239,6 +242,7 @@ async def bootstrap_workspace(
     eval_dir = ws / "eval"
     local_eval_sh = eval_dir / "local_eval.sh"
     hosted_submit_sh = eval_dir / "hosted_submit.sh"
+    merge_pool_sh = eval_dir / "merge_pool.sh"
     baseline_dir = ws / "vault" / "baseline"
 
     already_locked = (
@@ -265,6 +269,10 @@ async def bootstrap_workspace(
         shutil.copy2(Path(hosted_eval_src).resolve(), hosted_submit_sh)
         hosted_submit_sh.chmod(0o755)
 
+    if merge_pool_src:
+        shutil.copy2(Path(merge_pool_src).resolve(), merge_pool_sh)
+        merge_pool_sh.chmod(0o755)
+
     if baseline_src:
         bsrc = Path(baseline_src).resolve()
         if baseline_dir.exists():
@@ -281,12 +289,17 @@ async def bootstrap_workspace(
         hosted_submit_sh.write_text(
             """#!/usr/bin/env bash
 # Default quota-guarded hosted competition submission adapter.
-# Customize or configure competition credentials (e.g., ~/.kaggle/kaggle.json) for live remote scoring.
 set -euo pipefail
 CANDIDATE="${1:?candidate path required}"
 NOTE="${2:-rswarm automated submission}"
-if [ -n "${RSWARM_KAGGLE_COMPETITION:-}" ] && command -v kaggle >/dev/null 2>&1 && [ -f "$HOME/.kaggle/kaggle.json" ]; then
-  OUT="$(kaggle competitions submit -c "$RSWARM_KAGGLE_COMPETITION" -f "$CANDIDATE" -m "$NOTE" 2>&1)"
+KAGGLE_CMD=()
+if command -v kaggle >/dev/null 2>&1; then
+  KAGGLE_CMD=(kaggle)
+elif [ -x "$HOME/.local/bin/uvx" ]; then
+  KAGGLE_CMD=("$HOME/.local/bin/uvx" --from kaggle --with six kaggle)
+fi
+if [ -n "${RSWARM_KAGGLE_COMPETITION:-}" ] && [ "${#KAGGLE_CMD[@]}" -gt 0 ] && [ -f "$HOME/.kaggle/kaggle.json" ]; then
+  OUT="$("${KAGGLE_CMD[@]}" competitions submit -c "$RSWARM_KAGGLE_COMPETITION" -f "$CANDIDATE" -m "$NOTE" 2>&1)"
   python3 -c 'import json,sys; print(json.dumps({"submitted": True, "hosted_score": None, "message": sys.argv[1]}))' "$OUT"
 else
   python3 -c 'import json,sys; print(json.dumps({"submitted": False, "hosted_score": None, "message": "Hosted credentials not configured yet; candidate staged at " + sys.argv[1]}))' "$CANDIDATE"
@@ -333,18 +346,22 @@ fi
 1. `{ws}/eval/local_eval.sh`:
    - Executable bash script (`chmod +x`) taking `$1` = `<candidate_path>`.
    - Deterministically verifies ALL problem constraints with strict numerical rigor AND benchmarks score on local hardware.
+   - Must compute **Reducible Gap vs. Theoretical Ideal Lower/Upper Bound** per subproblem/band, masking any provably rigid optima (`reducible_gap = 0`) so diagnostics never bait agents onto un-improvable instances!
    - Must exit `0` and print ONE single-line JSON object at the very end of stdout with this exact schema:
-     `{{"valid": true, "score": <float>, "higher_is_better": {"false" if cfg.direction == "minimize" else "true"}, "eval_ms": <float>, "diagnostics": "concise summary", "metrics": {{}}}}`
+     `{{"valid": true, "score": <float>, "higher_is_better": {"false" if cfg.direction == "minimize" else "true"}, "eval_ms": <float>, "diagnostics": "concise summary including Reducible Gap by Band/Regime", "metrics": {{"reducible_by_regime": {{}}, "reducible_by_band": {{}}}}}}`
    - If `$1` violates constraints or crashes, print `{{"valid": false, "score": null, "diagnostics": "exact reason"}}` and exit `0` (or non-zero).
-   - Fast execution (< 15 seconds). Compile any C++ verifier helper inside `{ws}/shared/` if needed.
-2. `{ws}/eval/hosted_submit.sh`:
+   - Fast execution (< 15 seconds). Compile any C++20/OpenMP/CUDA helper inside `{ws}/shared/` if beneficial.
+2. `{ws}/eval/merge_pool.sh`:
+   - Executable bash script (`chmod +x`) taking `$1` = `<candidate_path>` and `$2` = `<best_dir>` (`{ws}/vault/best`).
+   - If the problem decomposes across multiple sub-instances/puzzles/tasks, independently verifies each improved sub-instance in `$1` and merges strictly better valid sub-instances into `$2/<candidate_name>`, then outputs JSON `{{"valid": true, "merged_count": <int>, "score": <float_or_null>, "best_path": "<path>", "diagnostics": "..."}}`! (If monolithic single-artifact, promotes `$1` into `$2/` iff verified score strictly improves upon `$2/`.)
+3. `{ws}/eval/hosted_submit.sh`:
    - Executable bash script (`chmod +x`) taking `$1` = `<candidate_path>` and `$2` = `<note>`.
    - Submits `$1` to the competition provider's hosted leaderboard if CLI/API credentials exist on the machine, or stages `$1` into `{ws}/vault/hosted_outbox/` and prints JSON:
      `{{"submitted": bool, "hosted_score": float_or_null, "message": "..."}}`.
-3. `{ws}/vault/baseline/`:
-   - Put a clean, working, valid baseline candidate file inside `{ws}/vault/baseline/` (for example `solution.py` or `submission.csv`) so `{ws}/eval/local_eval.sh <baseline_candidate>` returns `"valid": true` and establishes the `1.00x` baseline score!
-4. `{ws}/eval/islands.json`:
-   - JSON array of `{cfg.num_islands}` diverse research directions: `[{{"name": "short-slug", "strategy_focus": "1-2 sentences"}}]` tailored specifically to solving and beating SOTA on this problem.
+4. `{ws}/vault/baseline/`:
+   - Put a clean, working, valid baseline candidate file inside `{ws}/vault/baseline/` so `{ws}/eval/local_eval.sh <baseline_candidate>` returns `"valid": true` and establishes the `1.00x` baseline score!
+5. `{ws}/eval/islands.json`:
+   - JSON array of `{cfg.num_islands}` diverse Ideal-Backtracking research directions: `[{{"name": "short-slug", "strategy_focus": "1-2 sentences working backward from Ideal across full scale"}}]` tailored specifically to solving and beating SOTA on this problem.
 
 Test `{ws}/eval/local_eval.sh` on your `{ws}/vault/baseline/` candidate using bash before finishing!{repair_block}
 """
@@ -365,6 +382,8 @@ Test `{ws}/eval/local_eval.sh` on your `{ws}/vault/baseline/` candidate using ba
             local_eval_sh.chmod(0o755)
         if hosted_submit_sh.is_file():
             hosted_submit_sh.chmod(0o755)
+        if merge_pool_sh.is_file():
+            merge_pool_sh.chmod(0o755)
 
         cand = find_primary_candidate(baseline_dir)
         if cand is None:

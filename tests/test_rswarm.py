@@ -516,16 +516,7 @@ PY
             base_c = tmp_path / "overrides.json"
             base_c.write_text('{"a": 10.0, "b": 10.0}\n')
 
-            cfg = SwarmConfig(name="ws-pool", workspace_dir=str(ws), brief="Minimize a+b.", direction="minimize")
-            db = SwarmDB(ws / "state" / "swarm.db")
-            rbin = Path(__file__).resolve().parent.parent / "bin" / "rswarm"
-            boot = await bootstrap_workspace(
-                cfg, db, rbin, local_eval_src=str(local_ev), hosted_eval_src=str(hosted_ev), baseline_src=str(base_c)
-            )
-
-            # Install eval/merge_pool.sh taking elementwise min across keys "a" and "b"
-            (ws / "eval").chmod(0o755)
-            mp = ws / "eval" / "merge_pool.sh"
+            mp = tmp_path / "merge_pool.sh"
             mp.write_text(
                 '#!/usr/bin/env bash\n'
                 'python3 - "$1" "$2" <<\'PY\'\n'
@@ -543,8 +534,22 @@ PY
                 'print(json.dumps({"valid": True, "merged_count": cnt, "score": sc, "best_path": str(best_f), "diagnostics": "merged"}))\n'
                 'PY\n'
             )
-            mp.chmod(0o555)
-            (ws / "eval").chmod(0o555)
+            mp.chmod(0o755)
+
+            cfg = SwarmConfig(name="ws-pool", workspace_dir=str(ws), brief="Minimize a+b.", direction="minimize")
+            db = SwarmDB(ws / "state" / "swarm.db")
+            rbin = Path(__file__).resolve().parent.parent / "bin" / "rswarm"
+            boot = await bootstrap_workspace(
+                cfg,
+                db,
+                rbin,
+                local_eval_src=str(local_ev),
+                hosted_eval_src=str(hosted_ev),
+                merge_pool_src=str(mp),
+                baseline_src=str(base_c),
+            )
+            self.assertTrue((ws / "eval" / "merge_pool.sh").is_file())
+            self.assertTrue((ws / "vault" / "solvers").is_dir())
 
             # 1. Verify DEEPEN and CROSSOVER strictly preempt queued IMPLEMENT!
             imp_id, _, _ = db.create_node(island_id=0, role="IMPLEMENT", title="Imp", parent_id=boot["baseline_node_id"], novelty_threshold=None)

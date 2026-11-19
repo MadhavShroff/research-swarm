@@ -134,6 +134,7 @@ async def _cmd_init(args: argparse.Namespace) -> int:
         _rswarm_bin_path(),
         local_eval_src=args.local_eval,
         hosted_eval_src=args.hosted_eval,
+        merge_pool_src=args.merge_pool,
         baseline_src=args.baseline,
         force_rebuild=args.force_rebuild,
     )
@@ -478,6 +479,7 @@ def _add_shared_init_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dashboard-port", type=int, default=DEFAULT_DASHBOARD_PORT)
     p.add_argument("--local-eval", help="Optional path to pre-built local_eval.sh script.")
     p.add_argument("--hosted-eval", help="Optional path to pre-built hosted_submit.sh script.")
+    p.add_argument("--merge-pool", help="Optional path to pre-built merge_pool.sh per-instance union script.")
     p.add_argument("--baseline", help="Optional path to initial baseline candidate file or folder.")
     p.add_argument("--use-gpu-gate", action="store_true", help="Wrap local evaluations in Sparky gatectl run.")
     p.add_argument("--force-rebuild", action="store_true", help="Re-run Phase-0 harness synthesis even if already initialized.")
