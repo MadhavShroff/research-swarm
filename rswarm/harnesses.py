@@ -22,6 +22,7 @@ from .models import (
     resolve_agy_model_id,
     validate_model_choice,
 )
+from .research_tools import fetch_paper_or_url, search_literature_and_web
 from .tmux_pool import TmuxPool
 
 
@@ -75,7 +76,7 @@ MUX_LITE_TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Exact bash command string to execute."},
-                "timeout_sec": {"type": "integer", "description": "Optional timeout in seconds (default 90)."},
+                "timeout_sec": {"type": "integer", "description": "Optional timeout in seconds (default 180, max 420)."},
             },
             "required": ["command"],
         },
@@ -118,6 +119,37 @@ MUX_LITE_TOOLS: list[dict[str, Any]] = [
             "required": ["path", "old_text", "new_text"],
         },
     },
+    {
+        "name": "search_literature",
+        "description": (
+            "Search academic research papers (OpenAlex, Semantic Scholar, Crossref), "
+            "MathOverflow/Math.StackExchange proofs, GitHub repositories, and Wikipedia."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Research query (e.g. 'packing unit squares in a square side below integer')."},
+                "source": {"type": "string", "description": "all | papers | mathoverflow | github | wiki (default: all)."},
+                "limit": {"type": "integer", "description": "Results per source (default 6)."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "fetch_paper",
+        "description": (
+            "Download and extract full text / LaTeX from an arXiv ID, open-access PDF URL, "
+            "or web article, caching it permanently in `./shared/literature/` for the whole swarm."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "arXiv ID (e.g. '2305.12345') or direct PDF / HTML / raw GitHub URL."},
+                "save_slug": {"type": "string", "description": "Optional short filename slug for `./shared/literature/<slug>.md`."},
+            },
+            "required": ["target"],
+        },
+    },
 ]
 
 
@@ -137,7 +169,7 @@ class HarnessRunner:
         self.custom_harness_cmd = custom_harness_cmd
         self.allow_model_override = allow_model_override
 
-    def _build_agent_env(self, node_id: str, extra: dict[str, str] | None = None) -> dict[str, str]:
+    def _build_agent_env(self, node_id: str, workdir: Path | None = None, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = dict(os.environ)
         for drop in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"):
             env.pop(drop, None)
@@ -152,6 +184,10 @@ class HarnessRunner:
         env["OPENBLAS_NUM_THREADS"] = "2"
         env["MKL_NUM_THREADS"] = "2"
         env["MALLOC_ARENA_MAX"] = "2"
+        if workdir is not None:
+            node_tmp = workdir / ".tmp"
+            node_tmp.mkdir(parents=True, exist_ok=True)
+            env["TMPDIR"] = str(node_tmp)
         if extra:
             env.update(extra)
         return env
@@ -293,6 +329,8 @@ export RSWARM_NODE_ID={shlex.quote(node_id)}
 export RSWARM_SOCK={shlex.quote(str(self.workspace_dir / 'state' / 'rswarm.sock'))}
 
 cd {shlex.quote(str(workdir))}
+mkdir -p ".tmp"
+export TMPDIR="$PWD/.tmp"
 exec 9>".rswarm.lock"
 if ! flock -n 9; then
   echo "[LOCK BUSY] lock held by another worker on {node_id}; yielding cleanly." >&2
@@ -482,6 +520,8 @@ export OPENBLAS_NUM_THREADS=2
 export MALLOC_ARENA_MAX=2
 
 cd {shlex.quote(str(workdir))}
+mkdir -p ".tmp"
+export TMPDIR="$PWD/.tmp"
 exec 9>".rswarm.lock"
 if ! flock -n 9; then
   echo "[LOCK BUSY] lock held by another worker on {node_id}; yielding cleanly." >&2
@@ -689,12 +729,33 @@ exec nice -n 15 {rendered}
                 target.write_text(src.replace(old_t, new_t, 1))
                 return f"OK: updated {target}"
 
+            if name == "search_literature":
+                lit_dir = self.workspace_dir / "shared" / "literature"
+                res = await asyncio.to_thread(
+                    search_literature_and_web,
+                    str(inp.get("query", "")),
+                    source=str(inp.get("source") or "all"),
+                    limit=int(inp.get("limit") or 6),
+                    literature_dir=lit_dir,
+                )
+                return json.dumps(res, indent=2)[:20000]
+
+            if name == "fetch_paper":
+                lit_dir = self.workspace_dir / "shared" / "literature"
+                res = await asyncio.to_thread(
+                    fetch_paper_or_url,
+                    str(inp.get("target", "")),
+                    literature_dir=lit_dir,
+                    save_slug=str(inp.get("save_slug") or ""),
+                )
+                return json.dumps(res, indent=2)[:24000]
+
             if name == "bash":
                 cmd = str(inp.get("command", "")).strip()
                 if not cmd:
                     return "ERROR: empty command"
-                t_sec = max(5, min(180, int(inp.get("timeout_sec") or 90)))
-                env = self._build_agent_env(node_id)
+                t_sec = max(5, min(420, int(inp.get("timeout_sec") or 180)))
+                env = self._build_agent_env(node_id, workdir=workdir)
                 proc = await asyncio.create_subprocess_shell(
                     f"nice -n 15 bash -c {shlex.quote(cmd)}",
                     cwd=str(workdir),
@@ -703,15 +764,28 @@ exec nice -n 15 {rendered}
                     stderr=asyncio.subprocess.STDOUT,
                     start_new_session=True,
                 )
+                chunks: list[bytes] = []
+
+                async def _drain() -> None:
+                    assert proc.stdout is not None
+                    while True:
+                        buf = await proc.stdout.read(8192)
+                        if not buf:
+                            break
+                        chunks.append(buf)
+                    await proc.wait()
+
                 try:
-                    out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=t_sec)
+                    await asyncio.wait_for(_drain(), timeout=t_sec)
                 except asyncio.TimeoutError:
                     try:
                         os.killpg(proc.pid, 15)
                     except OSError:
                         pass
-                    return f"ERROR: command timed out after {t_sec}s"
-                out_str = out_b.decode("utf-8", errors="replace")
+                    partial = b"".join(chunks).decode("utf-8", errors="replace")[-4000:]
+                    tail_note = f"\n[Partial stdout before timeout]:\n{partial}" if partial.strip() else ""
+                    return f"ERROR: command timed out after {t_sec}s{tail_note}"
+                out_str = b"".join(chunks).decode("utf-8", errors="replace")
                 if len(out_str) > 16000:
                     out_str = out_str[:8000] + "\n...[truncated]...\n" + out_str[-8000:]
                 return f"[exit_code={proc.returncode}]\n{out_str}"

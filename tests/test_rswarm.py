@@ -707,6 +707,95 @@ PY
             self.assertTrue(d_res["ok"])
             self.assertIn("Gobel strips", db.get_strategy_directives()[0])
 
+    async def test_literature_fetch_dynamic_islands_and_affordances(self) -> None:
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        import threading
+        from rswarm.harnesses import HarnessRunner
+        from rswarm.research_tools import fetch_paper_or_url
+
+        class PaperHandler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args) -> None:
+                pass
+
+            def do_GET(self) -> None:
+                body = b"<html><body><h1>Packing Squares Below Integer</h1><p>Theorem 1: W = O(k^{7/11}).</p></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        srv = HTTPServer(("127.0.0.1", 0), PaperHandler)
+        port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                ws = tmp_path / "ws-lit"
+                local_ev = tmp_path / "local_eval.sh"
+                local_ev.write_text('#!/usr/bin/env bash\necho \'{"valid": true, "score": 25.0, "eval_ms": 1.0, "diagnostics": "ok", "metrics": {}}\'\n')
+                local_ev.chmod(0o755)
+                hosted_ev = tmp_path / "hosted_submit.sh"
+                hosted_ev.write_text('#!/usr/bin/env bash\necho \'{"submitted": false}\'\n')
+                hosted_ev.chmod(0o755)
+                base_c = tmp_path / "cand.json"
+                base_c.write_text("{}\n")
+
+                cfg = SwarmConfig(name="ws-lit", workspace_dir=str(ws), brief="Lit test.", max_active_islands=5)
+                db = SwarmDB(ws / "state" / "swarm.db")
+                rbin = Path(__file__).resolve().parent.parent / "bin" / "rswarm"
+                await bootstrap_workspace(
+                    cfg, db, rbin,
+                    local_eval_src=str(local_ev),
+                    hosted_eval_src=str(hosted_ev),
+                    baseline_src=str(base_c),
+                )
+                for wrap in ("swarm-search", "swarm-fetch", "swarm-check", "swarm-island"):
+                    self.assertTrue((ws / "bin" / wrap).is_file())
+
+                # 1. Verify fetch_paper_or_url saves clean text + updates INDEX.md
+                lit_dir = ws / "shared" / "literature"
+                fres = fetch_paper_or_url(f"http://127.0.0.1:{port}/paper.html", literature_dir=lit_dir, save_slug="below-integer")
+                self.assertTrue(fres["ok"])
+                self.assertIn("Theorem 1: W = O(k^{7/11})", fres["excerpt"])
+                self.assertTrue((lit_dir / "below-integer.md").is_file())
+                self.assertIn("below-integer.md", (lit_dir / "INDEX.md").read_text())
+
+                # 2. Verify capped dynamic island replacement retires the most-stagnant island!
+                with db._lock, db._connect() as conn:
+                    conn.execute("UPDATE islands SET consecutive_obstructions=18 WHERE island_id=4")
+                svc = EvalAndTreeService(cfg, db)
+                ires = await svc.handle_island({
+                    "node_id": "meta-test",
+                    "name": "weierstrass-rational",
+                    "focus": "Exact rational t = tan(theta/2) contact systems.",
+                })
+                self.assertTrue(ires["created"])
+                self.assertEqual(ires["retired_island_id"], 4)
+                active_ids = [int(i["island_id"]) for i in db.get_islands()]
+                self.assertNotIn(4, active_ids)
+                self.assertEqual(len(active_ids), 5)
+
+                # 3. Verify isolated TMPDIR + partial stdout returned on bash timeout!
+                tpool = TmuxPool("rswarm-lit-test", ws)
+                runner = HarnessRunner(workspace_dir=ws, tmux_pool=tpool)
+                wdir = ws / "work" / "n_probe"
+                wdir.mkdir(parents=True)
+                out_tmp = await runner._exec_lite_tool("bash", {"command": "echo $TMPDIR"}, wdir, "n_probe", False)
+                self.assertIn(str(wdir / ".tmp"), out_tmp)
+                out_to = await runner._exec_lite_tool(
+                    "bash",
+                    {"command": "echo 'STEP_PROGRESS_42'; sleep 10", "timeout_sec": 5},
+                    wdir,
+                    "n_probe",
+                    False,
+                )
+                self.assertIn("timed out after 5s", out_to)
+                self.assertIn("STEP_PROGRESS_42", out_to)
+        finally:
+            srv.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

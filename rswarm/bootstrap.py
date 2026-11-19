@@ -84,6 +84,22 @@ exec {rswarm_bin} agent hosted-submit --workspace "{ws}" "$@"
 set -euo pipefail
 exec {rswarm_bin} agent directive --workspace "{ws}" "$@"
 """,
+        "swarm-island": f"""#!/usr/bin/env bash
+set -euo pipefail
+exec {rswarm_bin} agent island --workspace "{ws}" "$@"
+""",
+        "swarm-search": f"""#!/usr/bin/env bash
+set -euo pipefail
+exec {rswarm_bin} agent search --workspace "{ws}" "$@"
+""",
+        "swarm-fetch": f"""#!/usr/bin/env bash
+set -euo pipefail
+exec {rswarm_bin} agent fetch --workspace "{ws}" "$@"
+""",
+        "swarm-check": f"""#!/usr/bin/env bash
+set -euo pipefail
+exec {rswarm_bin} agent check --workspace "{ws}" "$@"
+""",
     }
     for name, body in wrappers.items():
         p = bin_dir / name
