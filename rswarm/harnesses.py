@@ -16,7 +16,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .models import is_rate_limit_or_transient_text, validate_model_choice
+from .models import (
+    is_gemini_agy_model,
+    is_rate_limit_or_transient_text,
+    resolve_agy_model_id,
+    validate_model_choice,
+)
 from .tmux_pool import TmuxPool
 
 
@@ -171,6 +176,18 @@ class HarnessRunner:
         log_path = self.workspace_dir / "logs" / f"{node_id}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
+        if harness_mode == "agy" or is_gemini_agy_model(model_id):
+            return await self._run_agy_cli(
+                model_id=model_id,
+                effort=effort,
+                node_id=node_id,
+                window_name=window_name,
+                workdir=workdir,
+                system_prompt=system_prompt,
+                task_prompt=task_prompt,
+                log_path=log_path,
+                timeout_sec=timeout_sec,
+            )
         if harness_mode == "claude-mux":
             return await self._run_claude_mux_cli(
                 model_id=model_id,
@@ -355,6 +372,185 @@ exit "$RC"
             timed_out=timed_out,
             harness_used="claude-mux",
             model_used=model_id,
+            tmux_window=window_name,
+            final_text=tail_txt,
+            log_path=str(log_path),
+            rate_limited=was_rl,
+        )
+
+    async def _run_agy_cli(
+        self,
+        *,
+        model_id: str,
+        effort: str,
+        node_id: str,
+        window_name: str,
+        workdir: Path,
+        system_prompt: str,
+        task_prompt: str,
+        log_path: Path,
+        timeout_sec: int,
+    ) -> HarnessResult:
+        """Run Google Gemini 4 (Carbon / Argon / Neon / Flash) via Sparky's `agy` CLI (`--output-format stream-json`)."""
+        agy_model = resolve_agy_model_id(model_id, effort)
+        prompt_file = workdir / ".rswarm_agy_prompt.md"
+        resume_file = workdir / ".rswarm_agy_resume.md"
+        conv_file = workdir / ".rswarm_agy_conv_id"
+        parser_file = workdir / ".rswarm_agy_parse.py"
+        script_file = workdir / ".rswarm_agy_exec.sh"
+        exit_file = workdir / ".rswarm_exit"
+
+        prompt_file.write_text(f"{system_prompt}\n\n{task_prompt}")
+        resume_file.write_text(
+            "Session resumed after timeout or rate-limit wait. "
+            "All files in your working directory and your prior steps are intact. "
+            "Continue immediately from where you left off, run `swarm-eval`, and `swarm-submit` your candidate."
+        )
+        parser_file.write_text(
+            """import json, os, sys, time
+conv_path = sys.argv[1]
+status_path = sys.argv[2]
+status = "UNKNOWN"
+err_msg = ""
+usage = None
+for raw in sys.stdin:
+    s = raw.strip()
+    if not s:
+        continue
+    if not s.startswith("{"):
+        print(s, flush=True)
+        continue
+    try:
+        ev = json.loads(s)
+    except ValueError:
+        print(s, flush=True)
+        continue
+    et = ev.get("event")
+    if et == "step_update":
+        su = ev.get("step_update") or {}
+        cid = su.get("conversation_id")
+        if cid and not os.path.exists(conv_path):
+            open(conv_path, "w").write(str(cid))
+        st_type = su.get("step_type") or ""
+        td = su.get("text_delta") or ""
+        if td:
+            sys.stdout.write(td)
+            sys.stdout.flush()
+        elif su.get("state") == "DONE" and st_type not in ("user_input", "system_message", "agent_response"):
+            print(f"\\n[agy step={su.get('step_index')} {st_type} ({su.get('duration_seconds', 0):.1f}s)]", flush=True)
+    elif et == "result":
+        res = ev.get("result") or {}
+        cid = res.get("conversation_id")
+        if cid:
+            open(conv_path, "w").write(str(cid))
+        status = str(res.get("status") or "ERROR")
+        err_msg = str(res.get("error") or "")
+        usage = res.get("usage")
+        if err_msg:
+            print(f"\\n[agy ERROR] {err_msg}", flush=True)
+        else:
+            print(f"\\n=== [agy {status}] turns={res.get('num_turns')} dur={res.get('duration_seconds', 0):.1f}s ===", flush=True)
+
+if isinstance(usage, dict) and (int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)) > 0:
+    row = {
+        "ts": time.time(),
+        "model": "gemini",
+        "input_tokens": int(usage.get("input_tokens") or 0),
+        "output_tokens": int(usage.get("output_tokens") or 0),
+    }
+    store = os.path.expanduser("~/.cache/llm-provider-proxy/gemini-usage.jsonl")
+    os.makedirs(os.path.dirname(store), exist_ok=True)
+    with open(store, "a") as sink:
+        sink.write(json.dumps(row) + "\\n")
+
+open(status_path, "w").write(f"{status}\\n{err_msg}\\n")
+"""
+        )
+
+        agy_bin = str(Path.home() / ".local" / "bin" / "agy")
+        if not Path(agy_bin).is_file():
+            agy_bin = "agy"
+
+        script_body = f"""#!/usr/bin/env bash
+set -uo pipefail
+export PATH={shlex.quote(str(self.workspace_dir / 'bin'))}:{shlex.quote(str(Path.home() / '.local' / 'bin'))}:/usr/local/cuda/bin:"$PATH"
+export RSWARM_WORKSPACE={shlex.quote(str(self.workspace_dir))}
+export RSWARM_NODE_ID={shlex.quote(node_id)}
+export RSWARM_SOCK={shlex.quote(str(self.workspace_dir / 'state' / 'rswarm.sock'))}
+export OMP_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+export MALLOC_ARENA_MAX=2
+
+cd {shlex.quote(str(workdir))}
+exec 9>".rswarm.lock"
+if ! flock -n 9; then
+  echo "[LOCK BUSY] lock held by another worker on {node_id}; yielding cleanly." >&2
+  exit 75
+fi
+
+LAST_RL=0
+for ATTEMPT in $(seq 1 15); do
+  rm -f ".rswarm_agy_status"
+  if [ -s {shlex.quote(str(conv_file))} ]; then
+    CONV_ID="$(cat {shlex.quote(str(conv_file))})"
+    printf '=== [agy RESUME try=%s] node=%s window=%s model=%s conv=%s ===\\n' "$ATTEMPT" {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(agy_model)} "$CONV_ID"
+    nice -n 15 {shlex.quote(agy_bin)} \\
+      --conversation "$CONV_ID" \\
+      -p "$(cat {shlex.quote(str(resume_file))})" \\
+      --model {shlex.quote(agy_model)} \\
+      --dangerously-skip-permissions \\
+      --disable-slash-commands \\
+      --output-format stream-json 2>&1 | python3 {shlex.quote(str(parser_file))} {shlex.quote(str(conv_file))} ".rswarm_agy_status"
+    RC=${{PIPESTATUS[0]}}
+  else
+    printf '=== [agy try=%s] node=%s window=%s model=%s ===\\n' "$ATTEMPT" {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(agy_model)}
+    nice -n 15 {shlex.quote(agy_bin)} \\
+      -p "$(cat {shlex.quote(str(prompt_file))})" \\
+      --model {shlex.quote(agy_model)} \\
+      --dangerously-skip-permissions \\
+      --disable-slash-commands \\
+      --output-format stream-json 2>&1 | python3 {shlex.quote(str(parser_file))} {shlex.quote(str(conv_file))} ".rswarm_agy_status"
+    RC=${{PIPESTATUS[0]}}
+  fi
+  ST_HEAD="$(head -n 1 .rswarm_agy_status 2>/dev/null || echo UNKNOWN)"
+  if [ "$RC" -eq 0 ] && [ "$ST_HEAD" = "SUCCESS" ]; then
+    exit 0
+  fi
+  if grep -qiE "temporarily limiting|rate.limit|resource_exhausted|quota|too many requests|overloaded|429|529|503|502|504|unavailable|timed out" ".rswarm_agy_status" 2>/dev/null; then
+    LAST_RL=1
+    WAIT_S=$(( 15 + ATTEMPT * 12 + (RANDOM % 9) ))
+    if [ "$WAIT_S" -gt 90 ]; then WAIT_S=90; fi
+    printf '[AGY RETRY attempt=%s] Rate-limited or busy; sleeping %ss and continuing...\\n' "$ATTEMPT" "$WAIT_S"
+    sleep "$WAIT_S"
+    continue
+  fi
+  exit 1
+done
+if [ "$LAST_RL" -eq 1 ]; then
+  exit 75
+fi
+exit 1
+"""
+        script_file.write_text(script_body)
+        script_file.chmod(0o700)
+
+        rc, elapsed, timed_out = await self.tmux_pool.run_script_in_window(
+            window_name=window_name,
+            node_id=node_id,
+            workdir=workdir,
+            script_path=script_file,
+            log_path=log_path,
+            exit_file=exit_file,
+            timeout_sec=timeout_sec,
+        )
+        tail_txt = log_path.read_text(errors="replace")[-6000:] if log_path.exists() else ""
+        was_rl = (rc == 75) or (rc != 0 and is_rate_limit_or_transient_text(tail_txt[-1600:]))
+        return HarnessResult(
+            exit_code=rc,
+            elapsed_sec=elapsed,
+            timed_out=timed_out,
+            harness_used="agy",
+            model_used=agy_model,
             tmux_window=window_name,
             final_text=tail_txt,
             log_path=str(log_path),

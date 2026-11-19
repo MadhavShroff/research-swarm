@@ -562,9 +562,12 @@ function shortModelTag(modelId, effortLvl) {
   const m = String(modelId)
     .replace(/^anthropic-morph-/, '')
     .replace(/^claude-fable-/, 'fable-')
+    .replace(/^gemini-4-/, 'g4-')
+    .replace(/^gemini-/, 'gem-')
     .replace(/^anthropic-local-/, 'local-')
     .replace(/^anthropic-/, '');
-  const e = effortLvl ? `·${effortLvl === 'minimal' ? 'min' : effortLvl}` : '';
+  const hasTier = /-(low|medium|high|xhigh)$/i.test(m);
+  const e = (effortLvl && !hasTier) ? `·${effortLvl === 'minimal' ? 'min' : effortLvl}` : '';
   return `${m}${e}`;
 }
 
