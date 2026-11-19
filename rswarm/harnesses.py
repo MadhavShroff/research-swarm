@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .models import validate_model_choice
+from .models import is_rate_limit_or_transient_text, validate_model_choice
 from .tmux_pool import TmuxPool
 
 
@@ -30,6 +30,7 @@ class HarnessResult:
     tmux_window: str
     final_text: str
     log_path: str
+    rate_limited: bool = False
 
 
 def _load_mux_proxy_credentials() -> tuple[str, str]:
@@ -275,9 +276,15 @@ export RSWARM_NODE_ID={shlex.quote(node_id)}
 export RSWARM_SOCK={shlex.quote(str(self.workspace_dir / 'state' / 'rswarm.sock'))}
 
 cd {shlex.quote(str(workdir))}
+exec 9>".rswarm.lock"
+if ! flock -n 9; then
+  echo "[LOCK BUSY] lock held by another worker on {node_id}; yielding cleanly." >&2
+  exit 75
+fi
 SESSION_ID={shlex.quote(session_uuid)}
 RC=1
-for ATTEMPT in $(seq 1 15); do
+LAST_RL=0
+for ATTEMPT in $(seq 1 20); do
   OUT_TMP=".rswarm_cli_try.log"
   if compgen -G "$HOME/.claude/projects/*/${{SESSION_ID}}.jsonl" >/dev/null 2>&1; then
     printf '=== [claude-mux RESUME try=%s] node=%s window=%s model=%s session=%s ===\\n' "$ATTEMPT" {shlex.quote(node_id)} {shlex.quote(window_name)} {shlex.quote(model_id)} "$SESSION_ID"
@@ -310,14 +317,20 @@ for ATTEMPT in $(seq 1 15); do
     rm -f "$OUT_TMP"
     exit 0
   fi
-  if grep -qiE "temporarily limiting requests|rate.limit|overloaded|529|503|502|timed out" "$OUT_TMP" 2>/dev/null; then
-    printf '[CLI RETRY attempt=%s] Rate-limited or busy; sleeping 25s and continuing...\\n' "$ATTEMPT"
-    sleep 25
+  if grep -qiE "temporarily limiting requests|exceed your account's rate limit|rate.limit|too many requests|overloaded|429|529|503|502|504|bad gateway|service unavailable|timed out" "$OUT_TMP" 2>/dev/null; then
+    LAST_RL=1
+    WAIT_S=$(( 15 + ATTEMPT * 12 + (RANDOM % 9) ))
+    if [ "$WAIT_S" -gt 90 ]; then WAIT_S=90; fi
+    printf '[CLI RETRY attempt=%s] Rate-limited or busy; sleeping %ss and continuing...\\n' "$ATTEMPT" "$WAIT_S"
+    sleep "$WAIT_S"
     continue
   fi
   rm -f "$OUT_TMP"
   exit "$RC"
 done
+if [ "$LAST_RL" -eq 1 ]; then
+  exit 75
+fi
 exit "$RC"
 """
         script_file.write_text(script_body)
@@ -335,6 +348,7 @@ exit "$RC"
         tail_txt = ""
         if log_path.exists():
             tail_txt = log_path.read_text(errors="replace")[-6000:]
+        was_rl = (rc == 75) or (rc != 0 and is_rate_limit_or_transient_text(tail_txt[-1600:]))
         return HarnessResult(
             exit_code=rc,
             elapsed_sec=elapsed,
@@ -344,6 +358,7 @@ exit "$RC"
             tmux_window=window_name,
             final_text=tail_txt,
             log_path=str(log_path),
+            rate_limited=was_rl,
         )
 
     async def _run_custom_cmd(
@@ -583,6 +598,7 @@ exec nice -n 15 {rendered}
 
         wid = await self.tmux_pool.open_stream_window(window_name, node_id, log_path)
         timed_out = False
+        rate_limited = False
         exit_code = 0
         max_turns = max(24, start_turn + 12)
 
@@ -647,9 +663,9 @@ exec nice -n 15 {rendered}
                                 _append_log(f"[RETRY] Rate-limited/busy (HTTP {he.code}); sleeping {wait_s:.1f}s and continuing turn {turn}...")
                                 await asyncio.sleep(wait_s)
                                 continue
-                        if he.code in (408, 409, 425, 429, 500, 502, 503, 504, 529):
-                            timed_out = True
-                            exit_code = 124
+                        if he.code in (408, 409, 425, 429, 500, 502, 503, 504, 529) or is_rate_limit_or_transient_text(err_body):
+                            rate_limited = True
+                            exit_code = 75
                             _save_checkpoint(messages, turn - 1, final_text)
                         else:
                             exit_code = 1
@@ -760,4 +776,5 @@ exec nice -n 15 {rendered}
             tmux_window=window_name,
             final_text=final_text,
             log_path=str(log_path),
+            rate_limited=rate_limited,
         )

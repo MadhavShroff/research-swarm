@@ -401,6 +401,13 @@ async def _cmd_agent_rpc(args: argparse.Namespace) -> int:
             "title": args.title,
             "hypothesis": args.hypothesis,
             "rationale": args.rationale,
+            "target_slice": getattr(args, "target_slice", "") or "",
+        }
+    elif sub == "directive":
+        payload = {
+            "action": "directive",
+            "node_id": node_id,
+            "directive": args.directive,
         }
     elif sub == "submit":
         payload = {
@@ -435,6 +442,8 @@ async def _cmd_agent_rpc(args: argparse.Namespace) -> int:
         res = await svc.run_local_eval(node_id=node_id, candidate_path=payload["candidate_path"])
     elif sub == "propose":
         res = await svc.handle_propose(payload)
+    elif sub == "directive":
+        res = await svc.handle_directive(payload)
     elif sub == "submit":
         res = await svc.handle_submit(payload)
     else:
@@ -549,10 +558,16 @@ def build_parser() -> argparse.ArgumentParser:
     ag_prop.add_argument("--hypothesis", required=True)
     ag_prop.add_argument("--rationale", default="")
     ag_prop.add_argument("--role", default="IMPLEMENT")
+    ag_prop.add_argument("--target-slice", default="")
     ag_prop.add_argument("--parent-id", default=None)
     ag_prop.add_argument("--island-id", type=int, default=None)
     ag_prop.add_argument("--workspace", default=None)
     ag_prop.add_argument("--node-id", default=None)
+
+    ag_dir = ag_sub.add_parser("directive")
+    ag_dir.add_argument("--directive", required=True)
+    ag_dir.add_argument("--workspace", default=None)
+    ag_dir.add_argument("--node-id", default=None)
 
     ag_subm = ag_sub.add_parser("submit")
     ag_subm.add_argument("candidate")

@@ -6,15 +6,18 @@ import asyncio
 import json
 import os
 import shutil
+import signal
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
+from .bootstrap import install_workspace_skills_and_wrappers
 from .dashboard import DashboardServer
 from .db import SwarmDB
 from .governor import ResourceGovernor
 from .harnesses import HarnessRunner
-from .models import SwarmConfig, make_tmux_window_name
+from .models import SwarmConfig, is_rate_limit_or_transient_text, make_tmux_window_name
 from .rpc import EvalAndTreeService
 from .tmux_pool import TmuxPool
 
@@ -59,6 +62,12 @@ class SwarmCoordinator:
         self.stop_event = asyncio.Event()
         self.started_at: float = time.time()
         self._island_rr: int = 0
+        self._slice_rr: int = 0
+        self._model_cooldown_until: dict[str, float] = {}
+        self._model_rl_streak: dict[str, int] = {}
+        self._last_rescue_check: float = 0.0
+        self._bg_polish_task: asyncio.Task[None] | None = None
+        self._bg_polish_proc: asyncio.subprocess.Process | None = None
         self._cfg_path: Path = self.ws / "swarm.json"
         self._cfg_mtime: float = self._cfg_path.stat().st_mtime if self._cfg_path.is_file() else 0.0
         self._sync_config_meta(self.cfg)
@@ -136,6 +145,7 @@ class SwarmCoordinator:
         # Symlink CLAUDE.md, skills, shared read-only assets, and vault/solvers (zero disk/RAM bloat!).
         solvers_dir = self.ws / "vault" / "solvers"
         solvers_dir.mkdir(parents=True, exist_ok=True)
+        (self.ws / "shared" / "seeds_queue").mkdir(parents=True, exist_ok=True)
         for link_item in ("CLAUDE.md", ".claude", ".agents", "shared"):
             src = self.ws / link_item
             dst = wdir / link_item
@@ -150,12 +160,21 @@ class SwarmCoordinator:
         best_dir = self.ws / "vault" / "best"
         pool_files = sorted([p for p in best_dir.iterdir() if not p.name.startswith(".")]) if best_dir.is_dir() else []
         pool_cand_str = str(pool_files[0]) if len(pool_files) == 1 else ""
-        cand_src_str = (
-            node.get("candidate_path")
-            or pool_cand_str
-            or (parent.get("candidate_path") if parent else "")
-            or self.db.get_meta("baseline_candidate_path", "")
-        )
+        explicit_cand = str(node.get("candidate_path") or "")
+        parent_cand = str(parent.get("candidate_path") or "") if parent else ""
+        base_cand = str(self.db.get_meta("baseline_candidate_path", "") or "")
+
+        used_pool_seed = False
+        if explicit_cand and Path(explicit_cand).exists():
+            cand_src_str = explicit_cand
+        elif pool_cand_str and Path(pool_cand_str).exists():
+            cand_src_str = pool_cand_str
+            used_pool_seed = True
+        elif parent_cand and Path(parent_cand).exists():
+            cand_src_str = parent_cand
+        else:
+            cand_src_str = base_cand
+
         copied_cand: Path | None = None
         if cand_src_str and Path(cand_src_str).exists():
             csrc = Path(cand_src_str)
@@ -169,20 +188,72 @@ class SwarmCoordinator:
                     shutil.copy2(csrc, cdst)
             copied_cand = cdst
 
+        # Record exact starting seed_score so unchanged pool copies never trigger fake breakthroughs!
+        if node.get("seed_score") is None:
+            if used_pool_seed and self.db.get_meta("best_score") is not None:
+                seed_sc = float(self.db.get_meta("best_score"))
+            elif parent and parent.get("score") is not None:
+                seed_sc = float(parent["score"])
+            elif self.db.get_meta("baseline_score") is not None:
+                seed_sc = float(self.db.get_meta("baseline_score"))
+            else:
+                seed_sc = None
+            if seed_sc is not None:
+                self.db.update_node_runtime(nid, seed_score=seed_sc)
+                node["seed_score"] = seed_sc
+
+        # Auto-assign a high-yield target slice to IMPLEMENT / DEEPEN nodes when subproblem gap metrics exist!
+        role_up = str(node.get("role") or "").upper()
+        if role_up in ("IMPLEMENT", "DEEPEN") and not str(node.get("target_slice") or "").strip():
+            assigned = self._next_target_slice()
+            if assigned:
+                self.db.update_node_runtime(nid, target_slice=assigned)
+                node["target_slice"] = assigned
+
         (wdir / ".rswarm_started").write_text(str(time.time()))
 
-        # If CROSSOVER has a secondary parent, provide its artifact under ./secondary_parent/ for inspection!
+        # If CROSSOVER has parents with solver code, expose both solver folders + secondary candidate!
         sec_id = node.get("secondary_parent_id")
+        if node.get("parent_id"):
+            psolv = solvers_dir / str(node["parent_id"])
+            plink = wdir / "primary_solvers"
+            if psolv.is_dir() and not plink.exists():
+                os.symlink(psolv, plink)
         if sec_id:
+            ssolv = solvers_dir / str(sec_id)
+            slink = wdir / "secondary_solvers"
+            if ssolv.is_dir() and not slink.exists():
+                os.symlink(ssolv, slink)
             sec_node = self.db.get_node(sec_id)
             if sec_node and sec_node.get("candidate_path") and Path(sec_node["candidate_path"]).exists():
                 ssrc = Path(sec_node["candidate_path"])
                 sdir = wdir / "secondary_parent"
                 sdir.mkdir(parents=True, exist_ok=True)
                 sdst = sdir / ssrc.name
-                shutil.copytree(ssrc, sdst, symlinks=True) if ssrc.is_dir() else shutil.copy2(ssrc, sdst)
+                if not sdst.exists():
+                    shutil.copytree(ssrc, sdst, symlinks=True) if ssrc.is_dir() else shutil.copy2(ssrc, sdst)
 
         return wdir, copied_cand
+
+    def _next_target_slice(self) -> str:
+        slices = self.db.get_gap_slices()
+        if not slices:
+            ledger_p = self.ws / "shared" / "gap_ledger.json"
+            if ledger_p.is_file():
+                try:
+                    ld = json.loads(ledger_p.read_text())
+                    raw_s = ld.get("recommended_slices") or []
+                    if isinstance(raw_s, list) and raw_s:
+                        pick = raw_s[self._slice_rr % len(raw_s)]
+                        self._slice_rr += 1
+                        return str(pick)
+                except Exception:
+                    pass
+            return ""
+        top_k = slices[: min(6, len(slices))]
+        chosen = top_k[self._slice_rr % len(top_k)]
+        self._slice_rr += 1
+        return f"{chosen['slice']} (reducible_gap={chosen['gap']})"
 
     def _build_prompts(
         self,
@@ -213,7 +284,7 @@ class SwarmCoordinator:
             f"current_global_best={stats['best_score']} [{stats['best_speedup']:.4f}x], "
             f"target_to_beat={stats['leaderboard_target']}).\n"
             f"Your Node ID is `{node['node_id']}` on Research Island #{island['island_id']} (`{island['name']}`).\n"
-            "CLI skills on your PATH: `swarm-eval`, `swarm-propose`, `swarm-submit`, `swarm-hosted-submit`.\n"
+            "CLI skills on your PATH: `swarm-eval`, `swarm-propose`, `swarm-submit`, `swarm-directive`, `swarm-hosted-submit`.\n"
             f"Never modify `eval/` (it is read-only) and do NOT read `{engine_root}` engine internals. "
             "Focus 100% on rigorous mathematical & algorithmic breakthroughs."
         )
@@ -221,7 +292,7 @@ class SwarmCoordinator:
         lb1 = stats.get("leaderboard_number_one")
         lb1_line = f"- Public Leaderboard #1 Score: `{lb1}` (Top-5 auto-submit gate: `{stats.get('leaderboard_submit_threshold')}`)\n" if lb1 is not None else ""
         solvers_root = self.ws / "vault" / "solvers"
-        solver_dirs = sorted([d.name for d in solvers_root.iterdir() if d.is_dir()])[-6:] if solvers_root.is_dir() else []
+        solver_dirs = sorted([d.name for d in solvers_root.iterdir() if d.is_dir()])[-8:] if solvers_root.is_dir() else []
         solvers_hint = (
             f"- Winning Reusable Solvers in `./solvers_vault/`: `{', '.join(solver_dirs)}` (inspect & extend proven fast solvers rather than starting from scratch!)\n"
             if solver_dirs
@@ -232,7 +303,58 @@ class SwarmCoordinator:
         best_nid = stats.get("best_node_id")
         ref_node = (self.db.get_node(str(best_nid)) if best_nid else None) or parent
         if ref_node and ref_node.get("diagnostics"):
-            gap_line = f"- Latest Verified Diagnostics & Reducible Gap Scoreboard: `{str(ref_node['diagnostics'])[:420]}`\n"
+            gap_line = f"- Latest Verified Diagnostics & Reducible Gap Scoreboard: `{str(ref_node['diagnostics'])[:480]}`\n"
+
+        directives = self.db.get_strategy_directives()
+        dir_block = ""
+        if directives:
+            dir_lines = "\n".join(f"  {idx+1}. {d}" for idx, d in enumerate(directives[:4]))
+            dir_block = f"\n## Active Pinned Swarm Strategy Directives (Execute High-Yield Targets!)\n{dir_lines}\n"
+
+        tslice = str(node.get("target_slice") or "").strip()
+        slice_block = ""
+        if tslice and role in ("IMPLEMENT", "DEEPEN"):
+            slice_block = (
+                f"\n## Assigned High-Yield Target Slice (Focus Compute Here!)\n"
+                f"- Your assigned shard is: **`{tslice}`**.\n"
+                f"- Concentrate 100% of your constructive + optimization budget on this specific unsolved regime/band while preserving all other subproblems in `{copied_cand if copied_cand else './candidate/'}`!\n"
+            )
+
+        ledger_block = ""
+        ledger_p = self.ws / "shared" / "gap_ledger.json"
+        if ledger_p.is_file():
+            try:
+                ld = json.loads(ledger_p.read_text())
+                summary_str = str(ld.get("prompt_summary") or "")[:900]
+                if summary_str:
+                    ledger_block = f"\n## Live Subproblem Gap Ledger (`./shared/gap_ledger.json`)\n{summary_str}\n"
+            except Exception:
+                pass
+        elif self.db.get_gap_slices():
+            gs_str = ", ".join(f"{x['slice']}={x['gap']}" for x in self.db.get_gap_slices()[:8])
+            ledger_block = f"\n## Ranked Subproblem Gap Slices\n- `{gs_str}`\n"
+
+        obs = self.db.recent_obstructions(island_id=int(island["island_id"]), limit=5)
+        tabu_block = ""
+        if obs:
+            t_lines = [
+                f"- `{o['title'][:75]}` (score={o['score']}): {str(o.get('code_summary') or '')[:130].replace(chr(10), ' ')}"
+                for o in obs
+            ]
+            tabu_block = (
+                "\n## Exhausted / Obstructed Approaches on This Island (TABU — Do NOT Repeat!)\n"
+                + "\n".join(t_lines)
+                + "\n"
+            )
+
+        offload_block = ""
+        if (self.ws / "eval" / "background_polish.sh").is_file() and role in ("IMPLEMENT", "DEEPEN", "CROSSOVER"):
+            offload_block = (
+                "\n## Zero-Token Background Compaction Offload (`./shared/seeds_queue/`)\n"
+                "- Do NOT block for 10+ minutes running slow Python loops! Write fast (`<30s`) parametric/constructive generators or targeted C++20/CUDA sweeps, evaluate & submit your immediate gain, AND drop promising structural seed candidates into `./shared/seeds_queue/<node_id>_<tag>.json` so Sparky's continuous background C++/CUDA polisher compacts them further into `vault/best` with zero token wait!\n"
+            )
+
+        seed_note = f" (starting seed_score=`{node.get('seed_score')}` — you MUST strictly beat `{node.get('seed_score')}` or improve individual subproblems in `vault/best` to earn a Breakthrough!)" if node.get("seed_score") is not None else ""
 
         common_context = f"""## Problem Brief
 {self.cfg.brief}
@@ -244,30 +366,58 @@ Focus: {island['strategy_focus']}
 - {parent_info}
 - Global Best Score: `{stats['best_score']}` (`{stats['best_speedup']:.4f}x` over baseline)
 - Milestone Goal Score: `{stats['leaderboard_target']}` (`{self.cfg.direction}`)
-{lb1_line}{solvers_hint}{gap_line}- Starting Candidate in your workdir: `{copied_cand if copied_cand else './candidate/'}`
-
+{lb1_line}{solvers_hint}{gap_line}- Starting Candidate in your workdir: `{copied_cand if copied_cand else './candidate/'}`{seed_note}
+{dir_block}{slice_block}{ledger_block}{tabu_block}{offload_block}
 ## IDEAL-BACKTRACKING DISCOVERY DOCTRINE (Work Backward From the Ideal!)
 Do NOT make blind single-element random tweaks from the baseline! Achieve large structural leaps by working backward from the theoretical Ideal:
-1. **Ideal Lower Bound**: State the mathematical Ideal (e.g. zero wasted area / theoretical minimum cost) and check `swarm-eval` diagnostics to see which regime/band holds the largest **reducible gap** (never waste compute on provably rigid optima!).
+1. **Ideal Lower Bound**: State the mathematical Ideal (e.g. zero wasted area / theoretical minimum cost) and check `swarm-eval` diagnostics & `./shared/gap_ledger.json` to target the highest marginal-weight **reducible gap** (never waste compute on provably rigid optima!).
 2. **Obstruction Diagnosis**: Identify the exact geometric, combinatorial, or numerical obstruction blocking current `./solvers_vault/` elites from reaching the Ideal.
-3. **Universal Parametric Families + Upward Flow**: Formulate parameterized constructions or collective continuous-flow solvers (e.g. starting at the infeasible Ideal bound and relaxing overlaps upward via `./shared/` OpenMP/CUDA primitives, L-BFGS, FIRE, or exact DP) that solve **hundreds of instances across all scales simultaneously**, then polish with active-set / LP compaction!
+3. **Universal Parametric Families + Upward Flow**: Formulate parameterized constructions or collective continuous-flow solvers (e.g. multi-angle rational-slope strip families, Göbel/fault-line channels, or active-set sequential LP compaction) on your assigned slice, then polish!
 
 ## Live Breakthrough & Obstruction Bulletin (Learn from Sibling Streams!)
 {chr(10).join(bul_lines)}
 """
 
-        if role == "EXPLORE":
+        if role == "META":
+            telem = self.db.compile_meta_telemetry()
+            task_prompt = f"""{common_context}
+## Your Assignment (`META` — Autonomous Chief Research Strategist & Self-Optimizer)
+You are triggered automatically by the swarm's self-audit loop to diagnose stagnation, eliminate wasted effort, and direct the fleet onto the highest-yield mathematical leaps toward `{lb1 or stats['leaderboard_target']}`.
+
+### Live Quantitative Swarm Telemetry
+```json
+{json.dumps(telem, indent=2)[:4200]}
+```
+
+### Mandatory Actions (Execute in 1-2 Fast Tool Turns, No Code Compilation Needed):
+1. Analyze where the remaining gap (`{stats['best_score']}` vs `{lb1 or stats['leaderboard_target']}`) lives across regimes/bands (`gap_slices` / `./shared/gap_ledger.json`) and which approaches in `recent_obstructions` are exhausted dead ends.
+2. Broadcast a crisp, concrete mathematical & algorithmic directive to all workers via `swarm-directive`:
+   ```bash
+   swarm-directive --directive "<1-3 sentences naming exact mathematical constructions, target slices/regimes, marginal score weights, and dead-end methods to stop repeating>"
+   ```
+3. Immediately enqueue **3 to 4 orthogonal, shard-specific `IMPLEMENT` breakthroughs** distributed across islands (`0..{max(0, self.cfg.num_islands - 1)}`) using `swarm-propose` with `--target-slice`:
+   ```bash
+   swarm-propose --island-id <0..{max(0, self.cfg.num_islands - 1)}> --role IMPLEMENT \\
+     --target-slice "<specific regime/band slice>" \\
+     --title "<concise 4-8 word mathematical mechanism>" \\
+     --hypothesis "IDEAL BOUND: <bound>. OBSTRUCTION: <exact bottleneck>. MECHANISM: <concrete parametric construction / solver algorithm on this slice>." \\
+     --rationale "<quantified expected score drop on this slice>"
+   ```
+4. Stop immediately once `swarm-directive` and `swarm-propose` calls succeed.
+"""
+        elif role == "EXPLORE":
             task_prompt = f"""{common_context}
 ## Your Assignment (`EXPLORE` — Fast Ideal-Backtracking Researcher Role)
-CRITICAL EFFICIENCY RULE: All problem rules, scoring formulas, and Bulletin updates are already above. Do NOT spend turns running `ls` or `cat` on workspace files!
-1. Work backward from the Ideal bound toward Leaderboard #1 (`{lb1 or stats['leaderboard_target']}`): invent **2 to 3 distinct, high-leverage hypotheses** aligned with Island `{island['name']}` that attack the largest reducible gap across ALL scales at once.
-2. Every proposal MUST state: (a) the **Ideal bound & target regime**, (b) the **structural obstruction** it overcomes, and (c) the **exact universal family / collective solver algorithm** to implement.
-3. In your VERY FIRST `bash` tool call, invoke `swarm-propose` 2 or 3 times back-to-back:
+CRITICAL EFFICIENCY RULE: All problem rules, scoring formulas, Strategy Directives, Gap Ledger, and Tabu Obstructions are already above. Do NOT spend turns running `ls` or `cat` on workspace files!
+1. Work backward from the Ideal bound toward Leaderboard #1 (`{lb1 or stats['leaderboard_target']}`): invent **2 to 3 distinct, high-leverage hypotheses** aligned with Island `{island['name']}` that target distinct high-yield slices from the Gap Ledger and avoid every item in the Tabu list.
+2. Every proposal MUST state: (a) the **Ideal bound & target slice**, (b) the **structural obstruction** it overcomes, and (c) the **exact parametric family / solver algorithm** to implement.
+3. In your VERY FIRST `bash` tool call, invoke `swarm-propose` 2 or 3 times back-to-back (including `--target-slice`):
    ```bash
    swarm-propose --parent-id "{node['node_id']}" --island-id {island['island_id']} --role IMPLEMENT \\
+     --target-slice "<target regime or scale band>" \\
      --title "<concise 4-8 word title>" \\
-     --hypothesis "IDEAL BOUND: <bound>. OBSTRUCTION: <why current elites fall short>. MECHANISM: <universal parametric construction / upward-flow algorithm across full scale>." \\
-     --rationale "<expected multi-instance score drop and why it differs from recent Bulletin items>"
+     --hypothesis "IDEAL BOUND: <bound>. OBSTRUCTION: <why current elites fall short>. MECHANISM: <universal parametric construction / upward-flow algorithm>." \\
+     --rationale "<expected score drop on target slice and why it differs from Tabu items>"
    ```
 4. Stop immediately after confirming `swarm-propose` succeeded.
 """
@@ -291,21 +441,17 @@ Steps:
 """
         elif role == "CROSSOVER":
             task_prompt = f"""{common_context}
-## Your Assignment (`CROSSOVER` — Multi-Island Synthesis)
+## Your Assignment (`CROSSOVER` — Cross-Island Algorithmic Synthesis)
 Goal: **{node['title']}**
 {node['hypothesis']}
 
-- Primary parent candidate is in `./candidate/`.
-- Secondary island elite candidate is in `./secondary_parent/`.
+- Primary parent solver code: `./primary_solvers/` (candidate in `./candidate/`).
+- Secondary island solver code: `./secondary_solvers/` (candidate in `./secondary_parent/`).
 
-Steps:
-1. Inspect both `./candidate/` and `./secondary_parent/` to see what made each elite succeed.
-2. Synthesize a unified solver/candidate in `{copied_cand}` that combines the strongest mechanisms of both (e.g. taking the best per-instance configuration or chaining one solver's geometry into the other's optimizer).
-3. Benchmark iteratively with `swarm-eval {copied_cand}`.
-4. Submit your best verified result via:
-   ```bash
-   swarm-submit {copied_cand} --summary "Synthesized cross-island breakthrough: <details>"
-   ```
+CRITICAL RULE: `vault/best` already unions per-instance JSON outputs automatically—NEVER waste time merely taking per-key min/max of JSON files! Your job is **ALGORITHMIC FUSION**:
+1. Inspect `./primary_solvers/` and `./secondary_solvers/` to identify each parent's mathematical mechanism (e.g. constructive parametric family vs. active-set SLP / Jacobian optimizer).
+2. Write a fused pipeline that feeds one parent's geometric ansatz/generator into the other parent's compactor across unsolved Gap Ledger instances, writing strictly improved solutions to `{copied_cand}`.
+3. Verify with `swarm-eval {copied_cand}` and submit via `swarm-submit {copied_cand} --summary "<fused algorithm & instances improved>"`.
 """
         else:
             # IMPLEMENT or DEEPEN
@@ -436,7 +582,43 @@ Steps:
             refreshed = self.db.get_node(nid) or node
             retries = int(refreshed.get("timeout_retries") or 0)
 
-            # If agent hit timeout / rate-limit ceiling before finishing, preserve workdir + checkpoint and re-queue!
+            # Clear rate-limit streak on clean success.
+            if res.exit_code == 0 and not res.rate_limited:
+                self._model_rl_streak[model_id] = 0
+                self._model_cooldown_until[model_id] = 0.0
+
+            # ZERO-ABANDON RATE-LIMIT PROTECTION:
+            # Never abandon or fail a line of reasoning due to API rate limits (429 / temporarily limiting requests / overload)!
+            was_rate_limited = bool(
+                res.rate_limited
+                or res.exit_code == 75
+                or (res.exit_code != 0 and is_rate_limit_or_transient_text(res.final_text[-2000:]))
+            )
+            if refreshed["status"] == "RUNNING" and was_rate_limited:
+                streak = self._model_rl_streak.get(model_id, 0) + 1
+                self._model_rl_streak[model_id] = streak
+                cooldown = min(120.0, 25.0 * (1.45 ** min(streak - 1, 4)))
+                self._model_cooldown_until[model_id] = max(
+                    self._model_cooldown_until.get(model_id, 0.0),
+                    time.time() + cooldown,
+                )
+                self.db.update_node_runtime(
+                    nid,
+                    status="QUEUED",
+                    tmux_window="",
+                    diagnostics=(
+                        f"API rate-limited / busy; session & workdir preserved in queue without penalty "
+                        f"(model cooldown {cooldown:.0f}s, streak={streak})."
+                    ),
+                )
+                self.db.log_event(
+                    "GOVERNOR",
+                    nid,
+                    f"Rate-limit on {model_id} -> preserved session & re-queued {nid} (cooldown {cooldown:.0f}s)",
+                )
+                return
+
+            # If agent hit wall-clock timeout ceiling before finishing, preserve workdir + checkpoint and re-queue!
             if (
                 refreshed["status"] == "RUNNING"
                 and (res.timed_out or res.exit_code == 124)
@@ -460,14 +642,14 @@ Steps:
                 )
                 return
 
-            if role == "EXPLORE":
+            if role in ("EXPLORE", "META"):
                 self.db.update_node_runtime(
                     nid,
                     status="EVALUATED" if res.exit_code == 0 else "FAILED",
                     code_summary=res.final_text[-1200:],
                     finished=True,
                 )
-                self.db.log_event("DONE", nid, f"Explorer finished in {res.elapsed_sec:.1f}s (exit={res.exit_code})")
+                self.db.log_event("DONE", nid, f"{role} finished in {res.elapsed_sec:.1f}s (exit={res.exit_code})")
             else:
                 # Harvest any scratch candidate artifacts matching candidate suffix (or *.json) in wdir into the global pool!
                 best_exit_cand = copied_cand
@@ -525,6 +707,101 @@ Steps:
             self.active_tasks.pop(nid, None)
             self.active_roles.pop(nid, None)
 
+    def _maybe_schedule_meta_audit(self, stats: dict[str, Any]) -> None:
+        """Automatically schedule a META Strategic Diagnostician node periodically or upon stagnation."""
+        eval_total = int(stats.get("evaluated_total") or 0)
+        if eval_total < max(6, self.cfg.meta_interval_evals // 2):
+            return
+        with self.db._lock, self.db._connect() as conn:
+            in_flight = conn.execute(
+                "SELECT COUNT(*) AS c FROM nodes WHERE role='META' AND status IN ('QUEUED','RUNNING')"
+            ).fetchone()["c"]
+        if int(in_flight or 0) > 0:
+            return
+        last_meta = int(self.db.get_meta("last_meta_eval") or 0)
+        stall = int(self.db.get_meta("evals_since_global_best") or 0)
+        due_periodic = (eval_total - last_meta) >= max(8, int(self.cfg.meta_interval_evals))
+        due_stall = stall >= max(5, int(self.cfg.stall_evals_for_meta)) and (eval_total - last_meta) >= 6
+        if not (due_periodic or due_stall):
+            return
+        best_nid = stats.get("best_node_id") or self.db.get_meta("baseline_node_id")
+        reason_tag = f"stagnation={stall} evals" if due_stall else f"periodic@{eval_total} evals"
+        mid, ok, _ = self.db.create_node(
+            island_id=0,
+            role="META",
+            title=f"Meta-Research Audit & Strategic Pivot ({reason_tag})",
+            hypothesis="Audit subproblem gap ledger, retire obstructed dead ends, pin strategy directive, and dispatch sharded IMPLEMENT breakthroughs.",
+            rationale=f"Triggered automatically ({reason_tag}) to self-optimize research loop.",
+            parent_id=best_nid,
+            novelty_threshold=None,
+        )
+        if ok:
+            self.db.set_meta("last_meta_eval", eval_total)
+            self.db.log_event("STRATEGY", mid, f"Scheduled autonomous META Strategic Diagnostician ({reason_tag})")
+
+    async def _background_polisher_loop(self) -> None:
+        """Supervise optional `<workspace>/eval/background_polish.sh` zero-token C++/CUDA compaction daemon."""
+        script = self.ws / "eval" / "background_polish.sh"
+        if not script.is_file():
+            return
+        out_dir = self.ws / "shared" / "polish_out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (self.ws / "shared" / "seeds_queue").mkdir(parents=True, exist_ok=True)
+        seen_mtimes: dict[str, float] = {}
+        log_file = self.ws / "logs" / "background_polisher.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        while not self.stop_event.is_set():
+            if self._bg_polish_proc is None or self._bg_polish_proc.returncode is not None:
+                env = dict(os.environ)
+                env["RSWARM_WORKSPACE"] = str(self.ws)
+                env["OMP_NUM_THREADS"] = "4"
+                env["PATH"] = f"{self.ws / 'bin'}:/usr/local/cuda/bin:{env.get('PATH', '/usr/bin:/bin')}"
+                lf = log_file.open("a", encoding="utf-8")
+                self._bg_polish_proc = await asyncio.create_subprocess_exec(
+                    "nice",
+                    "-n",
+                    "19",
+                    "bash",
+                    str(script),
+                    cwd=str(self.ws),
+                    env=env,
+                    stdout=lf,
+                    stderr=asyncio.subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                lf.close()
+                self.db.log_event("INFO", "bg-polisher", f"Started zero-token background compaction daemon (pid={self._bg_polish_proc.pid})")
+
+            # Harvest any newly written polished candidates into `vault/best`!
+            for p in sorted(out_dir.glob("*")):
+                if not p.is_file() or p.name.startswith("."):
+                    continue
+                try:
+                    mt = p.stat().st_mtime
+                except OSError:
+                    continue
+                if mt > seen_mtimes.get(p.name, 0.0) + 0.2:
+                    seen_mtimes[p.name] = mt
+                    await self.eval_service.try_pool_merge("bg-polisher", p)
+
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=8.0)
+            except asyncio.TimeoutError:
+                pass
+
+    def _stop_background_polisher(self) -> None:
+        proc = self._bg_polish_proc
+        if proc is not None and proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except OSError:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+        self._bg_polish_proc = None
+
     async def run(
         self,
         *,
@@ -537,11 +814,30 @@ Steps:
         self.db.set_meta("started_at", self.started_at)
         self.db.set_meta("concurrency", self.cfg.concurrency)
         self.db.set_meta("role_routing", self.cfg.role_routing_dict())
+
+        # Refresh CLI wrappers (including `swarm-directive`) in `<workspace>/bin/`.
+        rswarm_bin = Path(shutil.which("rswarm") or sys.argv[0]).resolve()
+        if rswarm_bin.is_file():
+            try:
+                install_workspace_skills_and_wrappers(self.ws, rswarm_bin, self.cfg)
+            except Exception:
+                pass
+
+        self.tmux_pool.ensure_session()
+        reaped = self.tmux_pool.reap_orphan_windows_sync()
+        if reaped:
+            self.db.log_event("INFO", "coordinator", f"Reaped {reaped} orphaned tmux worker window(s) from prior run.")
         recovered = self.db.recover_interrupted_nodes()
         if recovered:
             self.db.log_event("INFO", "coordinator", f"Recovered {recovered} interrupted nodes back to QUEUED.")
-        self.tmux_pool.ensure_session()
+        rescued = self.db.recover_rate_limited_nodes(self.ws / "logs")
+        if rescued:
+            self.db.log_event("INFO", "coordinator", f"Resurrected {rescued} rate-limited node(s) back to QUEUED.")
+        self._last_rescue_check = time.time()
+
         await self.eval_service.start_rpc_server()
+        if (self.ws / "eval" / "background_polish.sh").is_file():
+            self._bg_polish_task = asyncio.create_task(self._background_polisher_loop())
 
         dash_url = ""
         started_own_dash = False
@@ -566,6 +862,13 @@ Steps:
         try:
             while not self.stop_event.is_set():
                 self._reload_live_config_if_changed()
+                now_ts = time.time()
+                if now_ts - self._last_rescue_check >= 45.0:
+                    self._last_rescue_check = now_ts
+                    r_cnt = self.db.recover_rate_limited_nodes(self.ws / "logs")
+                    if r_cnt:
+                        self.db.log_event("INFO", "coordinator", f"Auto-resurrected {r_cnt} rate-limited node(s) back to QUEUED.")
+
                 stats = self.db.get_summary_stats()
                 if max_evaluations is not None and stats["evaluated_total"] >= max_evaluations:
                     self.db.log_event(
@@ -583,6 +886,7 @@ Steps:
                     break
 
                 if not self.paused:
+                    self._maybe_schedule_meta_audit(stats)
                     self._replenish_frontier_if_needed()
 
                     while len(self.active_tasks) < self.cfg.concurrency and not self.stop_event.is_set():
@@ -595,18 +899,35 @@ Steps:
                             self.db.log_event("GOVERNOR", "throttle", f"Holding spawn: {reason}")
                             break
 
+                        active_meta = sum(1 for r in self.active_roles.values() if r == "META")
                         active_exp = sum(1 for r in self.active_roles.values() if r == "EXPLORE")
                         active_imp = sum(1 for r in self.active_roles.values() if r == "IMPLEMENT")
-                        excl_list: list[str] = []
+                        active_deep = sum(1 for r in self.active_roles.values() if r == "DEEPEN")
+                        active_cross = sum(1 for r in self.active_roles.values() if r == "CROSSOVER")
+                        excl_set: set[str] = set()
+                        if active_meta >= 1:
+                            excl_set.add("META")
                         if active_exp >= self.cfg.max_concurrent_researchers:
-                            excl_list.append("EXPLORE")
-                        # Reserve fast-lane slot(s) when concurrency >= 4 so DEBUG/CROSSOVER/DEEPEN/EXPLORE never wait behind IMPLEMENT!
+                            excl_set.add("EXPLORE")
+                        if self.cfg.concurrency >= 4:
+                            if active_deep >= max(2, self.cfg.concurrency // 3):
+                                excl_set.add("DEEPEN")
+                            if active_cross >= 1:
+                                excl_set.add("CROSSOVER")
                         eff_reserve = min(max(0, int(self.cfg.reserved_frontier_slots)), max(0, self.cfg.concurrency - 1)) if self.cfg.concurrency >= 4 else 0
                         if eff_reserve > 0 and active_imp >= (self.cfg.concurrency - eff_reserve):
-                            excl_list.append("IMPLEMENT")
+                            excl_set.add("IMPLEMENT")
+
+                        # Skip roles whose routed model is currently in rate-limit cooldown so unthrottled models keep slots busy!
+                        now_m = time.time()
+                        for r_cand in ("META", "DEBUG", "IMPLEMENT", "DEEPEN", "EXPLORE", "CROSSOVER"):
+                            m_id, _ = self.cfg.model_and_effort_for_role(r_cand)
+                            if now_m < self._model_cooldown_until.get(m_id, 0.0):
+                                excl_set.add(r_cand)
+
                         next_node = self.db.claim_next_queued_node(
                             preferred_island=self._island_rr % max(1, self.cfg.num_islands),
-                            exclude_roles=tuple(excl_list),
+                            exclude_roles=tuple(sorted(excl_set)),
                         )
                         if next_node is None:
                             break
@@ -627,6 +948,9 @@ Steps:
                 if pending:
                     await asyncio.gather(*pending, return_exceptions=True)
         finally:
+            self._stop_background_polisher()
+            if self._bg_polish_task is not None:
+                self._bg_polish_task.cancel()
             await self.eval_service.stop_rpc_server()
             if started_own_dash:
                 await self.dashboard.stop()

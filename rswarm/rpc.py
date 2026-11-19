@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -106,6 +107,8 @@ class EvalAndTreeService:
                 )
             elif action == "propose":
                 res = await self.handle_propose(req)
+            elif action == "directive":
+                res = await self.handle_directive(req)
             elif action == "submit":
                 res = await self.handle_submit(req)
             elif action == "hosted_submit":
@@ -257,6 +260,25 @@ class EvalAndTreeService:
         pool_res = None
         if raw["valid"]:
             pool_res = await self.try_pool_merge(node_id, cpath)
+            # If this node contributed strictly new subproblem wins (`merged_count > 0`) to `vault/best`,
+            # credit it as a genuine breakthrough even if another worker improved orthogonal subproblems concurrently!
+            if (
+                isinstance(pool_res, dict)
+                and int(pool_res.get("merged_count") or 0) > 0
+                and not rec["is_breakthrough"]
+            ):
+                merged_score = float(pool_res.get("score") or raw["score"])
+                rec = self.db.record_evaluation(
+                    node_id,
+                    valid=True,
+                    score=merged_score,
+                    eval_ms=raw["eval_ms"],
+                    diagnostics=str(pool_res.get("diagnostics") or raw["diagnostics"]),
+                    metrics=pool_res.get("metrics") if isinstance(pool_res.get("metrics"), dict) else raw["metrics"],
+                    candidate_path=str(cpath),
+                    code_summary=code_summary,
+                    finalize=finalize,
+                )
         return {"ok": True, **rec, "metrics": raw["metrics"], "pool_merge": pool_res}
 
     def _promote_node_solvers_to_vault(self, node_id: str) -> None:
@@ -316,6 +338,8 @@ class EvalAndTreeService:
                 return parsed
             new_score = float(parsed["score"])
             merged_cnt = int(parsed.get("merged_count") or 0)
+            if isinstance(parsed.get("metrics"), dict):
+                self.db._update_gap_slices_from_metrics(parsed["metrics"])
             cur_best = self.db.get_meta("best_score")
             baseline = self.db.get_meta("baseline_score")
             target = self.db.get_meta("leaderboard_target")
@@ -324,6 +348,7 @@ class EvalAndTreeService:
                 self.db.set_meta("best_score", new_score)
                 self.db.set_meta("best_speedup", sp)
                 self.db.set_meta("best_goal_progress", gp)
+                self.db.set_meta("evals_since_global_best", 0)
                 if node_id:
                     self.db.set_meta("best_node_id", node_id)
                 msg = (
@@ -353,6 +378,15 @@ class EvalAndTreeService:
                     )
             return parsed
 
+    async def handle_directive(self, req: dict[str, Any]) -> dict[str, Any]:
+        node_id = str(req.get("node_id") or "").strip() or None
+        directive = str(req.get("directive") or "").strip()
+        if not directive:
+            return {"ok": False, "error": "directive cannot be empty"}
+        directives = self.db.add_strategy_directive(directive, node_id=node_id)
+        self.db.log_event("STRATEGY", node_id or "meta", f"Pinned strategy directive: {directive[:180]}")
+        return {"ok": True, "directives": directives}
+
     async def handle_propose(self, req: dict[str, Any]) -> dict[str, Any]:
         parent_id = req.get("parent_id") or self.db.get_meta("best_node_id") or self.db.get_meta("baseline_node_id")
         parent = self.db.get_node(parent_id) if parent_id else None
@@ -360,6 +394,7 @@ class EvalAndTreeService:
         title = str(req.get("title") or "Untitled Hypothesis").strip()
         hypothesis = str(req.get("hypothesis") or "").strip()
         rationale = str(req.get("rationale") or "").strip()
+        target_slice = str(req.get("target_slice") or "").strip()
         role = str(req.get("role") or "IMPLEMENT").upper()
         if role not in ("IMPLEMENT", "EXPLORE", "DEEPEN", "CROSSOVER"):
             role = "IMPLEMENT"
@@ -371,6 +406,7 @@ class EvalAndTreeService:
             hypothesis=hypothesis,
             rationale=rationale,
             parent_id=parent_id,
+            target_slice=target_slice,
             novelty_threshold=self.cfg.novelty_threshold,
         )
         if accepted:
@@ -468,57 +504,86 @@ class EvalAndTreeService:
                 speedup=eval_res["speedup_vs_baseline"],
             )
 
-            # Multiply the tree automatically:
-            # (a) DEEPEN child to push hyperparameters / second-order refinements on this winner
-            # (b) EXPLORE child to branch orthogonal new hypotheses from this elevated frontier
+            # Multiply the tree automatically (bounded depth + code-distinct crossover):
+            # (a) DEEPEN child to push hyperparameters / second-order refinements (capped at max_deepen_depth unless beat_global)
+            # (b) EXPLORE child to branch orthogonal new hypotheses when beat_island or beat_global
             spawned_children: list[str] = []
-            deep_id, ok1, _ = self.db.create_node(
-                island_id=island_id,
-                role="DEEPEN",
-                title=f"Deepen & scale {node['title'][:100]}",
-                hypothesis=f"Push algorithmic/numerical exploitation of winning mechanism in {node_id}: {summary[:400]}",
-                rationale=f"Parent {node_id} reached {eval_res['speedup_vs_baseline']:.4f}x ({eval_res['score']}). Extract second-order gains.",
-                parent_id=node_id,
-                novelty_threshold=None,
-            )
-            if ok1:
-                spawned_children.append(deep_id)
+            cur_deep_depth = int(node.get("deepen_depth") or 0)
+            if cur_deep_depth < self.cfg.max_deepen_depth or eval_res["beat_global"]:
+                clean_title = node["title"]
+                while clean_title.startswith("Deepen & scale "):
+                    clean_title = clean_title[len("Deepen & scale "):]
+                deep_id, ok1, _ = self.db.create_node(
+                    island_id=island_id,
+                    role="DEEPEN",
+                    title=f"Deepen & scale {clean_title[:96]}",
+                    hypothesis=f"Push algorithmic/numerical exploitation of winning mechanism in {node_id}: {summary[:400]}",
+                    rationale=f"Parent {node_id} reached {eval_res['speedup_vs_baseline']:.4f}x ({eval_res['score']}). Extract second-order gains.",
+                    parent_id=node_id,
+                    deepen_depth=cur_deep_depth + 1,
+                    target_slice=str(node.get("target_slice") or ""),
+                    novelty_threshold=None,
+                )
+                if ok1:
+                    spawned_children.append(deep_id)
 
-            exp_id, ok2, _ = self.db.create_node(
-                island_id=island_id,
-                role="EXPLORE",
-                title=f"Branch new frontier from {node_id}",
-                hypothesis=f"Invent 2-3 orthogonal structural leaps atop {node_id} ({eval_res['speedup_vs_baseline']:.4f}x).",
-                rationale="Multiply winning lineage into distinct sub-directions.",
-                parent_id=node_id,
-                novelty_threshold=None,
-            )
-            if ok2:
-                spawned_children.append(exp_id)
+            if eval_res["beat_island"] or eval_res["beat_global"]:
+                exp_id, ok2, _ = self.db.create_node(
+                    island_id=island_id,
+                    role="EXPLORE",
+                    title=f"Branch new frontier from {node_id}",
+                    hypothesis=f"Invent 2-3 orthogonal structural leaps atop {node_id} ({eval_res['speedup_vs_baseline']:.4f}x).",
+                    rationale="Multiply winning lineage into distinct sub-directions.",
+                    parent_id=node_id,
+                    novelty_threshold=None,
+                )
+                if ok2:
+                    spawned_children.append(exp_id)
 
-            # (c) Cross-island CROSSOVER if another island has a distinct verified elite!
-            if eval_res["beat_island"]:
-                other_elites = [
-                    isl for isl in self.db.get_islands()
-                    if int(isl["island_id"]) != island_id and isl.get("best_node_id")
-                ]
-                if other_elites:
-                    partner = max(other_elites, key=lambda x: float(x.get("best_speedup") or 1.0))
-                    x_id, ok3, _ = self.db.create_node(
-                        island_id=island_id,
-                        role="CROSSOVER",
-                        title=f"Crossover {node_id} x {partner['best_node_id']}",
-                        hypothesis=(
-                            f"Combine {node_id} ({eval_res['speedup_vs_baseline']:.4f}x on island {island_id}) "
-                            f"with {partner['best_node_id']} ({partner['best_speedup']:.4f}x on island {partner['name']})."
-                        ),
-                        rationale="AlphaEvolve cross-island synthesis of two independent breakthroughs.",
-                        parent_id=node_id,
-                        secondary_parent_id=str(partner["best_node_id"]),
-                        novelty_threshold=self.cfg.novelty_threshold,
-                    )
-                    if ok3:
-                        spawned_children.append(x_id)
+            # (c) Cross-island Solver-Code CROSSOVER only when two islands hold distinct solver codebases & non-identical candidates!
+            if eval_res["beat_island"] and (self.ws / "vault" / "solvers" / node_id).is_dir():
+                st = self.db.get_summary_stats()
+                with self.db._lock, self.db._connect() as conn:
+                    active_x = conn.execute(
+                        "SELECT COUNT(*) AS c FROM nodes WHERE role='CROSSOVER' AND status IN ('QUEUED','RUNNING')"
+                    ).fetchone()["c"]
+                if int(active_x or 0) < 2:
+                    other_elites = [
+                        isl for isl in self.db.get_islands()
+                        if int(isl["island_id"]) != island_id
+                        and isl.get("best_node_id")
+                        and str(isl["best_node_id"]) != node_id
+                        and (self.ws / "vault" / "solvers" / str(isl["best_node_id"])).is_dir()
+                    ]
+                    if other_elites:
+                        partner = max(other_elites, key=lambda x: float(x.get("best_speedup") or 1.0))
+                        p_nid = str(partner["best_node_id"])
+                        p_node = self.db.get_node(p_nid)
+                        same_bytes = False
+                        if p_node and p_node.get("candidate_path") and Path(p_node["candidate_path"]).is_file() and vault_target.is_file():
+                            try:
+                                h1 = hashlib.sha256(vault_target.read_bytes()).hexdigest()
+                                h2 = hashlib.sha256(Path(p_node["candidate_path"]).read_bytes()).hexdigest()
+                                same_bytes = (h1 == h2)
+                            except OSError:
+                                same_bytes = False
+                        if not same_bytes or not (self.ws / "eval" / "merge_pool.sh").is_file():
+                            x_id, ok3, _ = self.db.create_node(
+                                island_id=island_id,
+                                role="CROSSOVER",
+                                title=f"Algorithmic Crossover {node_id} x {p_nid}",
+                                hypothesis=(
+                                    f"Fuse solver algorithms from `./solvers_vault/{node_id}/` ({eval_res['speedup_vs_baseline']:.4f}x) "
+                                    f"and `./solvers_vault/{p_nid}/` ({partner['best_speedup']:.4f}x on `{partner['name']}`) "
+                                    f"into a chained pipeline (e.g. generator from one feeding optimizer of the other)."
+                                ),
+                                rationale="Cross-island algorithmic synthesis of two distinct solver codebases.",
+                                parent_id=node_id,
+                                secondary_parent_id=p_nid,
+                                novelty_threshold=self.cfg.novelty_threshold,
+                            )
+                            if ok3:
+                                spawned_children.append(x_id)
 
             hosted_res = None
             sub_thresh = self.cfg.leaderboard_submit_threshold

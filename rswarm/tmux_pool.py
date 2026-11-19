@@ -73,7 +73,34 @@ class TmuxPool:
         )
         if res.returncode != 0:
             return []
-        return [ln.strip() for ln in res.stdout.splitlines() if ln.strip() and ln.strip() != "00-hub"]
+        return [
+            ln.strip()
+            for ln in res.stdout.splitlines()
+            if ln.strip() and ln.strip() not in ("00-hub", "00-tui")
+        ]
+
+    def reap_orphan_windows_sync(self) -> int:
+        """Kill leftover worker windows from prior coordinator instances while keeping 00-tui/00-hub intact."""
+        res = self._tmux_sync(
+            "list-windows", "-t", self.session_name, "-F", "#{window_id} #{window_name} #{pane_pid}"
+        )
+        if res.returncode != 0:
+            return 0
+        reaped = 0
+        tracked_ids = set(self.active_windows.keys())
+        for ln in res.stdout.splitlines():
+            parts = ln.strip().split()
+            if len(parts) < 2:
+                continue
+            wid, wname = parts[0], parts[1]
+            ppid = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+            if wname in ("00-hub", "00-tui") or wid in tracked_ids:
+                continue
+            if ppid > 1:
+                self._kill_pid_tree_safe(ppid)
+            self._tmux_sync("kill-window", "-t", wid)
+            reaped += 1
+        return reaped
 
     def _kill_pid_tree_safe(self, pane_pid: int) -> None:
         """Terminate only the specific pane process group/children spawned by rswarm."""

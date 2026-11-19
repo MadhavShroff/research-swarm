@@ -71,6 +71,7 @@ def make_tmux_window_name(role: str, island_name: str, title: str, node_id: str)
     role_code = {
         "BASELINE": "B",
         "BOOTSTRAP": "P0",
+        "META": "M",
         "EXPLORE": "R",
         "IMPLEMENT": "I",
         "DEBUG": "D",
@@ -82,6 +83,21 @@ def make_tmux_window_name(role: str, island_name: str, title: str, node_id: str)
     topic = slugify(title, max_len=14)
     short_id = re.sub(r"[^a-zA-Z0-9]", "", node_id)[-4:] or "0000"
     return f"{role_code}-{isl}-{topic}-{short_id}"[:32]
+
+
+_RATE_LIMIT_RE = re.compile(
+    r"temporarily limiting requests|exceed your account's rate limit|"
+    r"rate[\s_-]?limit|too many requests|\b429\b|\b529\b|\b502\b|\b503\b|\b504\b|"
+    r"overloaded|bad gateway|service unavailable|lock held by another",
+    re.IGNORECASE,
+)
+
+
+def is_rate_limit_or_transient_text(text: str | None) -> bool:
+    """Return True when logs/diagnostics indicate transient API rate-limiting or gateway overload."""
+    if not text:
+        return False
+    return bool(_RATE_LIMIT_RE.search(text))
 
 
 def is_better_score(candidate: float, reference: float, direction: str) -> bool:
@@ -178,6 +194,9 @@ class SwarmConfig:
     eval_workers: int = 4
     num_islands: int = 5
     max_debug_depth: int = 2
+    max_deepen_depth: int = 1
+    meta_interval_evals: int = 20
+    stall_evals_for_meta: int = 12
     novelty_threshold: float = 0.72
     hosted_quota_per_day: int = 5
     auto_hosted_on_sota: bool = False
@@ -230,7 +249,7 @@ class SwarmConfig:
 
     def model_and_effort_for_role(self, role: str) -> tuple[str, str]:
         r = (role or "").upper()
-        if r == "EXPLORE":
+        if r in ("EXPLORE", "META"):
             return self.researcher_model, self.researcher_effort
         if r == "DEEPEN":
             return self.deepen_model, self.deepen_effort

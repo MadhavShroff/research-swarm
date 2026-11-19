@@ -221,11 +221,13 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .diary-card.BREAKTHROUGH { border-left: 3px solid var(--win); }
   .diary-card.HYPOTHESIS { border-left: 3px solid var(--accent); }
   .diary-card.OBSTRUCTION { border-left: 3px solid #64748b; }
+  .diary-card.STRATEGY { border-left: 3px solid var(--gold); }
   .diary-card.HOSTED_SUBMIT { border-left: 3px solid var(--gold); }
   .dc-top { display: flex; justify-content: space-between; gap: 6px; font-size: 10px; color: var(--dim); margin-bottom: 4px; }
   .dc-type { font-weight: 700; letter-spacing: 0.04em; }
   .dc-type.BREAKTHROUGH { color: var(--win); }
   .dc-type.HYPOTHESIS { color: var(--accent); }
+  .dc-type.STRATEGY { color: var(--gold); }
   .dc-title { font-size: 12.5px; font-weight: 600; color: var(--text); margin-bottom: 4px; line-height: 1.35; text-wrap: balance; }
   .dc-body { font-size: 11.5px; color: var(--muted); line-height: 1.42; text-wrap: pretty; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
@@ -411,6 +413,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="filter-bar" id="diaryFilters">
       <button class="pill active" data-filter="ALL">All</button>
+      <button class="pill" data-filter="STRATEGY">Strategy</button>
       <button class="pill" data-filter="BREAKTHROUGH">Breakthroughs</button>
       <button class="pill" data-filter="HYPOTHESIS">Hypotheses</button>
       <button class="pill" data-filter="OBSTRUCTION">Obstructions</button>
