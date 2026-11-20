@@ -1178,6 +1178,44 @@ class SwarmDB:
             "direction": meta.get("direction", "minimize"),
         }
 
+    def get_diary_entries(self, entry_type: str = "ALL", limit: int = 500) -> dict[str, Any]:
+        """Return paginated diary entries for one filter type plus exact per-type DB counts."""
+        lim = max(1, min(int(limit), 1000))
+        etype = (entry_type or "ALL").strip().upper()
+        with self._connect() as conn:
+            count_rows = conn.execute(
+                "SELECT entry_type, COUNT(*) AS c FROM diary GROUP BY entry_type"
+            ).fetchall()
+            counts = {str(r["entry_type"]): int(r["c"]) for r in count_rows}
+            counts["ALL"] = sum(counts.values())
+            if etype == "ALL":
+                rows = conn.execute(
+                    """
+                    SELECT entry_id, node_id, island_id, entry_type, title,
+                           substr(COALESCE(body, ''), 1, 600) AS body,
+                           score, speedup, created_at
+                    FROM diary ORDER BY entry_id DESC LIMIT ?
+                    """,
+                    (lim,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT entry_id, node_id, island_id, entry_type, title,
+                           substr(COALESCE(body, ''), 1, 600) AS body,
+                           score, speedup, created_at
+                    FROM diary WHERE entry_type=? ORDER BY entry_id DESC LIMIT ?
+                    """,
+                    (etype, lim),
+                ).fetchall()
+        return {
+            "ok": True,
+            "entry_type": etype,
+            "entries": [dict(r) for r in rows],
+            "counts": counts,
+            "total": counts.get(etype, len(rows)),
+        }
+
     def export_dashboard_state(self) -> dict[str, Any]:
         """Export complete radial-tree geometry, islands, diary, bulletin, and live events."""
         with self._lock, self._connect() as conn:
@@ -1204,7 +1242,12 @@ class SwarmDB:
                     """
                 ).fetchall()
             ]
-            diary = [
+            diary_count_rows = conn.execute(
+                "SELECT entry_type, COUNT(*) AS c FROM diary GROUP BY entry_type"
+            ).fetchall()
+            diary_counts = {str(r["entry_type"]): int(r["c"]) for r in diary_count_rows}
+            diary_counts["ALL"] = sum(diary_counts.values())
+            diary_recent = [
                 dict(r)
                 for r in conn.execute(
                     """
@@ -1215,6 +1258,25 @@ class SwarmDB:
                     """
                 ).fetchall()
             ]
+            diary_pinned = [
+                dict(r)
+                for r in conn.execute(
+                    """
+                    SELECT entry_id, node_id, island_id, entry_type, title,
+                           substr(COALESCE(body, ''), 1, 420) AS body,
+                           score, speedup, created_at
+                    FROM diary WHERE entry_type IN ('BREAKTHROUGH', 'HOSTED_SUBMIT')
+                    ORDER BY entry_id DESC LIMIT 40
+                    """
+                ).fetchall()
+            ]
+            seen_diary: set[int] = set()
+            diary: list[dict[str, Any]] = []
+            for row in sorted(diary_recent + diary_pinned, key=lambda r: int(r["entry_id"]), reverse=True):
+                eid = int(row["entry_id"])
+                if eid not in seen_diary:
+                    seen_diary.add(eid)
+                    diary.append(row)
             bulletin = [
                 dict(r)
                 for r in conn.execute("SELECT * FROM bulletin ORDER BY post_id DESC LIMIT 40").fetchall()
@@ -1345,6 +1407,7 @@ class SwarmDB:
             "islands": islands,
             "nodes": nodes,
             "diary": diary,
+            "diary_counts": diary_counts,
             "bulletin": bulletin,
             "events": events,
             "hosted_submissions": hosted,

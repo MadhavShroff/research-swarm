@@ -995,6 +995,18 @@ PY
             picks = [coord._pick_model_for_role("IMPLEMENT")[0] for _ in range(3)]
             self.assertEqual(picks, ["anthropic-morph-dsv41flash", "anthropic-morph-dsv41flash", "gemini-3.8-flash-high"])
 
+            # Verify breakthroughs never age out of export_dashboard_state() or get_diary_entries()!
+            db.add_diary(entry_type="BREAKTHROUGH", title="Historic Breakthrough", body="Beat baseline", node_id=nid, island_id=0, score=22.0, speedup=1.31)
+            for idx in range(140):
+                db.add_diary(entry_type="OBSTRUCTION", title=f"Obs {idx}", body="No gain", node_id=nid, island_id=0, score=22.108, speedup=1.30)
+            st = db.export_dashboard_state()
+            self.assertTrue(any(e["entry_type"] == "BREAKTHROUGH" for e in st["diary"]))
+            self.assertGreaterEqual(st["diary_counts"].get("BREAKTHROUGH", 0), 1)
+            self.assertGreaterEqual(st["diary_counts"].get("OBSTRUCTION", 0), 140)
+            bt_page = db.get_diary_entries("BREAKTHROUGH", limit=500)
+            self.assertGreaterEqual(len(bt_page["entries"]), 1)
+            self.assertEqual(bt_page["entries"][0]["entry_type"], "BREAKTHROUGH")
+
 
 if __name__ == "__main__":
     unittest.main()

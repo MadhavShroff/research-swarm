@@ -571,6 +571,8 @@ const state = {
   selectedNodeId: null,
   hoveredNodeId: null,
   diaryFilter: 'ALL',
+  diaryCache: {},
+  diaryLoading: null,
   scaleMode: 'hybrid',
   nodeDensity: 'all',
   panX: 0,
@@ -1118,10 +1120,52 @@ function renderResearchPulse(d, islMap) {
   }).join('');
 }
 
+async function fetchDiaryFilter(filter) {
+  const key = filter || 'ALL';
+  if (state.diaryLoading === key) return;
+  state.diaryLoading = key;
+  try {
+    const r = await fetch(`${API_BASE}api/diary?type=${encodeURIComponent(key)}&limit=500`);
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.ok) {
+        state.diaryCache[key] = j;
+        if (state.data && j.counts) state.data.diary_counts = j.counts;
+        if (state.diaryFilter === key && state.data) renderDiaryList(state.data);
+      }
+    }
+  } catch (e) {}
+  finally {
+    if (state.diaryLoading === key) state.diaryLoading = null;
+  }
+}
+
 function renderDiaryList(d) {
   const nodeMap = new Map((d.nodes || []).map(n => [n.node_id, n]));
-  const entries = (d.diary || []).filter(e => state.diaryFilter === 'ALL' || e.entry_type === state.diaryFilter);
-  document.getElementById('diaryCount').textContent = `${entries.length} entries`;
+  const counts = d.diary_counts || {};
+  const labelMap = {
+    ALL: 'All',
+    STRATEGY: 'Strategy',
+    BREAKTHROUGH: 'Breakthroughs',
+    HYPOTHESIS: 'Hypotheses',
+    OBSTRUCTION: 'Obstructions',
+    HOSTED_SUBMIT: 'Hosted',
+  };
+  document.querySelectorAll('#diaryFilters .pill').forEach(btn => {
+    const f = btn.dataset.filter;
+    const base = labelMap[f] || f;
+    btn.textContent = counts[f] !== undefined ? `${base} (${counts[f]})` : base;
+  });
+  const cached = state.diaryCache[state.diaryFilter];
+  const entries = cached
+    ? (cached.entries || [])
+    : (d.diary || []).filter(e => state.diaryFilter === 'ALL' || e.entry_type === state.diaryFilter);
+  const total = counts[state.diaryFilter] !== undefined ? counts[state.diaryFilter] : entries.length;
+  document.getElementById('diaryCount').textContent =
+    total > entries.length ? `${entries.length} of ${total} entries` : `${entries.length} entries`;
+  if (!cached && total > entries.length && state.diaryLoading !== state.diaryFilter) {
+    fetchDiaryFilter(state.diaryFilter);
+  }
   document.getElementById('diaryList').innerHTML = entries.map(e => {
     const sel = e.node_id && e.node_id === state.selectedNodeId ? 'selected' : '';
     const nd = e.node_id ? nodeMap.get(e.node_id) : null;
@@ -1582,6 +1626,7 @@ document.getElementById('diaryFilters').addEventListener('click', e => {
   document.querySelectorAll('#diaryFilters .pill').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   state.diaryFilter = btn.dataset.filter;
+  fetchDiaryFilter(state.diaryFilter);
   renderAll();
 });
 document.getElementById('scaleBar').addEventListener('click', e => {
@@ -1736,7 +1781,10 @@ class DashboardServer:
                     break
 
             parts = req_line.decode("utf-8", errors="replace").split()
-            path = urllib.parse.unquote(parts[1].split("?", 1)[0]) if len(parts) >= 2 else "/"
+            raw_target = parts[1] if len(parts) >= 2 else "/"
+            raw_path, _, raw_qs = raw_target.partition("?")
+            path = urllib.parse.unquote(raw_path)
+            qs = urllib.parse.parse_qs(raw_qs)
 
             if path in ("/", "/index.html"):
                 init_json = json.dumps(self._build_state_payload()).replace("</", "<\\/")
@@ -1745,6 +1793,14 @@ class DashboardServer:
                 self._write_resp(writer, 200, "text/html; charset=utf-8", body)
             elif path == "/api/state":
                 body = json.dumps(self._build_state_payload()).encode("utf-8")
+                self._write_resp(writer, 200, "application/json", body)
+            elif path == "/api/diary":
+                etype = (qs.get("type", ["ALL"])[0] or "ALL").strip().upper()
+                try:
+                    lim = int(qs.get("limit", ["500"])[0])
+                except ValueError:
+                    lim = 500
+                body = json.dumps(self.db.get_diary_entries(entry_type=etype, limit=lim)).encode("utf-8")
                 self._write_resp(writer, 200, "application/json", body)
             elif path == "/api/submission.csv":
                 sub_f = self.ws / "vault" / "hosted_outbox" / "submission.csv"
