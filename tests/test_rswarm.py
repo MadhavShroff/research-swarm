@@ -952,6 +952,42 @@ PY
             gr_out = await runner._exec_lite_tool("grep_files", {"pattern": "return x \\+ 1", "path": "."}, wdir, "n_guard", False)
             self.assertIn("good.py:2:", gr_out)
 
+    async def test_near_miss_engine_promotion_and_iterate_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ws = tmp_path / "ws-nm"
+            local_ev = tmp_path / "local_eval.sh"
+            local_ev.write_text('#!/usr/bin/env bash\necho \'{"valid": true, "score": 22.108, "eval_ms": 1.0, "diagnostics": "ok", "metrics": {}}\'\n')
+            local_ev.chmod(0o755)
+            base_c = tmp_path / "cand.json"
+            base_c.write_text("{}\n")
+            cfg = SwarmConfig(name="ws-nm", workspace_dir=str(ws), brief="Near miss test.", num_islands=2)
+            db = SwarmDB(ws / "state" / "swarm.db")
+            rbin = Path(__file__).resolve().parent.parent / "bin" / "rswarm"
+            boot = await bootstrap_workspace(cfg, db, rbin, local_eval_src=str(local_ev), baseline_src=str(base_c))
+            svc = EvalAndTreeService(cfg, db)
+
+            nid, _, _ = db.create_node(
+                island_id=0, role="IMPLEMENT", title="GPU Cavity RnR",
+                hypothesis="Run cavity ruin-and-recreate.", parent_id=boot["baseline_node_id"],
+                seed_score=22.108, novelty_threshold=None,
+            )
+            wdir = ws / "work" / nid
+            wdir.mkdir(parents=True, exist_ok=True)
+            (wdir / "cavity_gpu.cu").write_text("// CUDA cavity engine\n")
+            res = await svc.handle_submit({
+                "node_id": nid,
+                "candidate_path": str(base_c),
+                "summary": "SPEC_FILES=cavity_gpu.cu; NEAR_MISS_MARGIN=0.0024; reached L_cur+0.0024 on n=175",
+            })
+            self.assertTrue(res["vault_promoted"])
+            self.assertAlmostEqual(res["near_miss_margin"], 0.0024, places=5)
+            self.assertIsNotNone(res["spawned_iterate_node"])
+            self.assertTrue((ws / "vault" / "solvers" / nid / "cavity_gpu.cu").is_file())
+            it_node = db.get_node(res["spawned_iterate_node"])
+            self.assertEqual(it_node["role"], "DEEPEN")
+            self.assertIn("Iterate near-miss", it_node["title"])
+
 
 if __name__ == "__main__":
     unittest.main()

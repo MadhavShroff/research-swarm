@@ -626,7 +626,7 @@ CRITICAL EXECUTION & FIDELITY RULES:
 - **NEVER write 'gap-falsification' or 'impossibility audit' reports!** Proved optima and `L=K` integer walls are already excluded from `./shared/gap_ledger.json`.
 1. Implement the specified C++20 (`g++ -O3 -fopenmp`, e.g. `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python solver in your working directory, emitting improved subproblems into `patch.json`.
 2. Verify & merge in `<15ms` via `swarm-check patch.json --apply --candidate {copied_cand}` and run all verification checks in `[4] VERIFICATION PLAN`.
-3. Submit your verified candidate via `swarm-submit {copied_cand} --summary "SPEC_FILES=<files built>; MECHANISM=<exact spec implemented>; VERIFY=<measured test output & score>"`!
+3. Submit your verified candidate via `swarm-submit {copied_cand} --summary "SPEC_FILES=<files built>; NEAR_MISS_MARGIN=<min_n(L_achieved - L_cur)>; MECHANISM=<exact spec implemented>; VERIFY=<measured test output & score>"`! (Reporting `NEAR_MISS_MARGIN` <= 0.015 automatically promotes your compiled engine to `vault/solvers/` and spawns an iterative `DEEPEN` refinement!)
 """
         return system_prompt, task_prompt
 

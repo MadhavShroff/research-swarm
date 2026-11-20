@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import time
@@ -765,9 +766,61 @@ class EvalAndTreeService:
         has_spec = bool(str(node.get("execution_spec_json") or "").strip() not in ("", "{}"))
         spec_drift = bool(has_spec and not built_files and str(node.get("role") or "").upper() in ("IMPLEMENT", "DEEPEN"))
         drift_tag = "[SPEC_DRIFT: 0 solver files built] " if spec_drift else ""
+
+        # Lever #4: Track near-miss margin (`min_n(L_achieved - L_cur)`) and iterate promising compiled engines instead of discarding!
+        near_miss_margin: float | None = None
+        m_margin = re.search(r"(?:near_miss_margin|min_margin|margin)\s*[=:]\s*([0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)", summary, re.IGNORECASE)
+        if m_margin:
+            try:
+                near_miss_margin = float(m_margin.group(1))
+            except ValueError:
+                near_miss_margin = None
+        nm_file = wdir / "near_miss.json"
+        if near_miss_margin is None and nm_file.is_file():
+            try:
+                nm_obj = json.loads(nm_file.read_text())
+                if isinstance(nm_obj, dict) and nm_obj.get("min_margin") is not None:
+                    near_miss_margin = float(nm_obj["min_margin"])
+            except Exception:
+                pass
+        if near_miss_margin is not None:
+            self.db.update_node_runtime(node_id, near_miss_margin=near_miss_margin)
+
+        has_compiled_engine = any(f.endswith((".cu", ".cpp", ".cc", ".hpp")) for f in built_files)
+        spawned_iterate: str | None = None
+        if (
+            has_compiled_engine
+            and near_miss_margin is not None
+            and 0.0 <= near_miss_margin <= 0.015
+            and int(node.get("deepen_depth") or 0) < self.cfg.max_deepen_depth
+            and str(node.get("role") or "").upper() == "IMPLEMENT"
+        ):
+            self._promote_node_solvers_to_vault(node_id)
+            it_id, ok_it, _ = self.db.create_node(
+                island_id=island_id,
+                role="DEEPEN",
+                title=f"Iterate near-miss (margin={near_miss_margin:.4f}): {node['title'][:72]}",
+                hypothesis=(
+                    f"Parent {node_id} compiled {built_files[:4]} and reached within near_miss_margin={near_miss_margin:.5f} of L_cur! "
+                    f"Reuse the existing compiled engine in `./solvers_vault/{node_id}/`, diagnose why it stopped {near_miss_margin:.5f} short, "
+                    "and scale GPU/LP restarts, cavity size, or homotopy schedule until L_new < L_cur."
+                ),
+                novel_insight=str(node.get("novel_insight") or ""),
+                origin="deepen",
+                rationale=f"Near-miss engine archival & iterative deepening (margin={near_miss_margin:.5f} <= 0.015).",
+                parent_id=node_id,
+                deepen_depth=int(node.get("deepen_depth") or 0) + 1,
+                target_slice=str(node.get("target_slice") or ""),
+                novelty_threshold=None,
+            )
+            if ok_it:
+                spawned_iterate = it_id
+                self.db.log_event("STRATEGY", it_id, f"Promoted near-miss engine {node_id} (margin={near_miss_margin:.5f}) -> spawned DEEPEN {it_id}")
+
+        margin_tag = f", near_miss={near_miss_margin:.5f}" if near_miss_margin is not None else ""
         obs_msg = (
             f"[OBSTRUCTION] {drift_tag}{node['title']} scored {eval_res['score']} "
-            f"({eval_res['speedup_vs_baseline']:.4f}x, built={len(built_files)} file(s)). Lesson: {summary[:280]}"
+            f"({eval_res['speedup_vs_baseline']:.4f}x, built={len(built_files)} file(s){margin_tag}). Lesson: {summary[:260]}"
         )
         self.db.post_bulletin(
             "OBSTRUCTION",
@@ -780,13 +833,20 @@ class EvalAndTreeService:
         self.db.add_diary(
             "OBSTRUCTION",
             f"No gain: {drift_tag}{node['title']} ({eval_res['speedup_vs_baseline']:.4f}x)",
-            f"Score: {eval_res['score']}\nBuilt Files: {built_files[:12]}\nSummary: {summary}\nDiagnostics: {eval_res['diagnostics']}",
+            f"Score: {eval_res['score']}\nBuilt Files: {built_files[:12]}\nNear-Miss Margin: {near_miss_margin}\nSummary: {summary}\nDiagnostics: {eval_res['diagnostics']}",
             node_id=node_id,
             island_id=island_id,
             score=eval_res["score"],
             speedup=eval_res["speedup_vs_baseline"],
         )
-        return {**eval_res, "vault_promoted": False, "built_files": built_files[:16], "spec_drift": spec_drift}
+        return {
+            **eval_res,
+            "vault_promoted": bool(spawned_iterate),
+            "built_files": built_files[:16],
+            "spec_drift": spec_drift,
+            "near_miss_margin": near_miss_margin,
+            "spawned_iterate_node": spawned_iterate,
+        }
 
     async def handle_hosted_submit(self, req: dict[str, Any]) -> dict[str, Any]:
         node_id = req.get("node_id")

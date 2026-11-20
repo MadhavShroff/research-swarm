@@ -99,6 +99,7 @@ class SwarmDB:
                     execution_spec_json TEXT DEFAULT '{}',
                     origin TEXT DEFAULT 'researcher',
                     novelty_score REAL DEFAULT 1.0,
+                    near_miss_margin REAL,
                     title TEXT NOT NULL,
                     hypothesis TEXT DEFAULT '',
                     rationale TEXT DEFAULT '',
@@ -199,6 +200,8 @@ class SwarmDB:
                 conn.execute("ALTER TABLE nodes ADD COLUMN origin TEXT DEFAULT 'researcher'")
             if "novelty_score" not in cols:
                 conn.execute("ALTER TABLE nodes ADD COLUMN novelty_score REAL DEFAULT 1.0")
+            if "near_miss_margin" not in cols:
+                conn.execute("ALTER TABLE nodes ADD COLUMN near_miss_margin REAL")
             isl_cols = {r["name"] for r in conn.execute("PRAGMA table_info(islands)").fetchall()}
             if "consecutive_obstructions" not in isl_cols:
                 conn.execute("ALTER TABLE islands ADD COLUMN consecutive_obstructions INTEGER DEFAULT 0")
@@ -695,6 +698,7 @@ class SwarmDB:
         timeout_retries: int | None = None,
         seed_score: float | None = None,
         target_slice: str | None = None,
+        near_miss_margin: float | None = None,
         finished: bool = False,
     ) -> None:
         sets: list[str] = []
@@ -732,6 +736,9 @@ class SwarmDB:
         if target_slice is not None:
             sets.append("target_slice=?")
             vals.append(target_slice[:240])
+        if near_miss_margin is not None:
+            sets.append("near_miss_margin=?")
+            vals.append(float(near_miss_margin))
         if finished:
             sets.append("finished_at=?")
             vals.append(time.time())
