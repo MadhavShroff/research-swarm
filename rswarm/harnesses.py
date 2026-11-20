@@ -174,7 +174,7 @@ MUX_LITE_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "rationale": {"type": "string", "description": "WHY: First-principles reasoning explaining why known/online methods plateau and why this cross-disciplinary mechanism breaks the barrier."},
                 "novel_insight": {"type": "string", "description": "INSIGHT: Source scientific discipline + exact hidden assumption broken + novel mathematical structure or move operator."},
-                "target_files": {"type": "string", "description": "WHERE: Exact workspace files to read/reuse (e.g. ./shared/packing_sdk.hpp) and exact files/functions to create or edit (e.g. ./solver.cpp, ./patch.json)."},
+                "target_files": {"type": "string", "description": "WHERE: Exact workspace files to read/reuse (e.g. existing ./shared/ harnesses) and exact files/functions to create or edit (e.g. ./solver.cpp, ./patch.json)."},
                 "exact_changes": {"type": "string", "description": "WHAT & HOW: Complete step-by-step mathematical formulas, data structures, code/edit instructions, compile command, and parameter sweep."},
                 "verification_plan": {"type": "string", "description": "VERIFY: Exact test command(s), explicit puzzle/instance IDs to test, measurable pass/fail criterion, and swarm-check/swarm-submit step."},
                 "target_slice": {"type": "string", "description": "SLICE: Exact non-wall anchor slice or subproblem IDs to attack."},

@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_DEEPSEEK_MODEL = "anthropic-morph-dsv41flash"
+DEFAULT_RESEARCHER_MODEL = "gemini-4-neon-xhigh"
+DEFAULT_BUILDER_POOL = "gemini-3.8-flash-high,gemini-3.8-flash-high,anthropic-morph-dsv41flash"
 DEFAULT_WORKSPACE_ROOT = Path.home() / "research-workspaces"
 DEFAULT_TAILSCALE_BIND = os.environ.get("RSWARM_DASHBOARD_HOST", "0.0.0.0")
 DEFAULT_DASHBOARD_PORT = 8988
@@ -210,18 +212,18 @@ class SwarmConfig:
     leaderboard_submit_threshold: float | None = None
     harness: str = "claude-mux-scale"
     custom_harness_cmd: str = ""
-    researcher_model: str = DEFAULT_DEEPSEEK_MODEL
-    researcher_effort: str = "max"
-    implementer_model: str = DEFAULT_DEEPSEEK_MODEL
-    implementer_effort: str = "minimal"
-    deepen_model: str = DEFAULT_DEEPSEEK_MODEL
-    deepen_effort: str = "max"
-    debugger_model: str = DEFAULT_DEEPSEEK_MODEL
-    debugger_effort: str = "minimal"
+    researcher_model: str = DEFAULT_RESEARCHER_MODEL
+    researcher_effort: str = "xhigh"
+    implementer_model: str = DEFAULT_BUILDER_POOL
+    implementer_effort: str = "medium"
+    deepen_model: str = DEFAULT_BUILDER_POOL
+    deepen_effort: str = "medium"
+    debugger_model: str = DEFAULT_BUILDER_POOL
+    debugger_effort: str = "medium"
     crossover_model: str = DEFAULT_DEEPSEEK_MODEL
     crossover_effort: str = "high"
-    effort: str = "minimal"
-    concurrency: int = 10
+    effort: str = "medium"
+    concurrency: int = 20
     max_concurrent_researchers: int = 2
     reserved_frontier_slots: int = 2
     max_heavy_mux_procs: int = 24

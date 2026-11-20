@@ -120,6 +120,8 @@ class SwarmCoordinator:
         self._last_rescue_check: float = 0.0
         self._bg_polish_task: asyncio.Task[None] | None = None
         self._bg_polish_proc: asyncio.subprocess.Process | None = None
+        self._vault_sweep_task: asyncio.Task[None] | None = None
+        self._vault_sweep_proc: asyncio.subprocess.Process | None = None
         self._cfg_path: Path = self.ws / "swarm.json"
         self._cfg_mtime: float = self._cfg_path.stat().st_mtime if self._cfg_path.is_file() else 0.0
         self._sync_config_meta(self.cfg)
@@ -337,6 +339,24 @@ class SwarmCoordinator:
         self._model_rr[role] = idx + 1
         return avail[idx % len(avail)], effort_lvl
 
+    def _discover_shared_harnesses(self, max_items: int = 12) -> list[str]:
+        """List reusable headers/modules/harnesses under `<workspace>/shared/` and `shared/engines/`."""
+        found: list[str] = []
+        exts = {".hpp", ".h", ".cuh", ".py", ".rs", ".sh"}
+        for rel in ("shared", "shared/engines"):
+            d = self.ws / rel
+            if not d.is_dir():
+                continue
+            for p in sorted(d.iterdir()):
+                if not p.is_file() or p.name.startswith(".") or p.suffix.lower() not in exts:
+                    continue
+                if "daemon" in p.name.lower() or "polish" in p.name.lower():
+                    continue
+                found.append(f"./{rel}/{p.name}")
+                if len(found) >= max_items:
+                    return found
+        return found
+
     def _next_science_lens(self, node: dict[str, Any], island: dict[str, Any]) -> tuple[str, str]:
         """Select a disparate cross-disciplinary scientific lens, rotating across physics, biology, math, materials, and global traditions."""
         idx = (self._lens_rr + int(island.get("island_id") or 0)) % len(CROSS_DISCIPLINARY_LENSES)
@@ -542,19 +562,26 @@ STRICT DISCIPLINE: Do NOT run `swarm-eval`, do NOT write `matplotlib` plots, and
    swarm-submit-hypothesis --island-id <active_island_id> --role IMPLEMENT \\
      --rationale "<WHY: first-principles analysis of why narrow methods plateau and how a mechanism from {lens_name} breaks this barrier>" \\
      --novel-insight "<INSIGHT: source scientific field + exact hidden assumption broken + original mathematical structure or operator>" \\
-     --target-files "<WHERE: exact files to read/reuse (e.g. ./shared/packing_sdk.hpp) and exact files/functions to create or edit (e.g. ./my_solver.cpp, ./patch.json)>" \\
-     --exact-changes "<WHAT & HOW: explicit formulas, data structures, step-by-step code/edit instructions, compile flags, and parameter sweeps>" \\
-     --verification-plan "<VERIFY: exact compile+run command, explicit target puzzle IDs n=..., measurable pass/fail criterion, and swarm-check patch.json --apply>" \\
-     --target-slice "<SLICE: specific non-wall anchor slice>" \\
+     --target-files "<WHERE: exact shared harnesses in ./shared/ to reuse and exact files/functions to create or edit (e.g. ./my_solver.cpp, ./patch.json)>" \\
+     --exact-changes "<WHAT & HOW: concise <=250-line operator building on ./shared/ harnesses, explicit formulas, compile flags, and deep parameter sweep on 5-8 top targets>" \\
+     --verification-plan "<VERIFY: exact compile+run command, explicit 5-8 high-opportunity targets, measurable pass/fail criterion, and fast verification + swarm-submit>" \\
+     --target-slice "<SLICE: specific high-opportunity target slice>" \\
      --title "<TITLE: concise 4-8 word novel mechanism title>"
    ```
 """
         elif role == "EXPLORE":
             lens_name, lens_desc = self._next_science_lens(node, island)
+            shared_harnesses = self._discover_shared_harnesses()
+            harness_hint = (
+                f"- **Reusable Shared Harnesses (MANDATORY REUSE — NO BOILERPLATE):** {', '.join(shared_harnesses)}. "
+                "Design specs so Implementers reuse these harnesses, write `<= 250` lines of new operator code, compile in `< 4` minutes, and screen only `5–8` high-opportunity targets deeply (`30–60s` each)!\n"
+                if shared_harnesses
+                else "- **Modular Fast-Screen Principle:** Design specs so Implementers reuse existing `./shared/` helpers, keep new code `<= 250` lines (`< 4` min build), and screen `5–8` high-opportunity targets deeply (`30–60s` each) instead of `1–2s` across `50+` targets!\n"
+            )
             task_prompt = f"""{common_context}
 ## Your Assignment (`EXPLORE` — Cross-Disciplinary Frontier Theorist & Execution-Spec Author)
-STRICT DISCIPLINE: Do NOT run `swarm-eval`, do NOT generate `matplotlib` plots, and do NOT write multi-minute audit scripts! The exact non-wall, non-proved surgery targets are already listed in `./shared/gap_ledger.json` above. Complete your analysis and invoke `swarm-submit-hypothesis` within 3-5 tool calls!
-- **Primary Disparate Scientific Lens for This Wave**: **`{lens_name}`** — {lens_desc}
+STRICT DISCIPLINE: Do NOT run `swarm-eval`, do NOT generate `matplotlib` plots, and do NOT write multi-minute audit scripts! Prioritize open high-opportunity targets (see `./shared/gap_ledger.json` if present above). Complete your analysis and invoke `swarm-submit-hypothesis` within 3-5 tool calls!
+{harness_hint}- **Primary Disparate Scientific Lens for This Wave**: **`{lens_name}`** — {lens_desc}
 - You may also draw from ANY other disparate field of science, physics, biology, chemistry, crystallography, pure math, or global research tradition that breaks our current plateau (`{stats['best_score']}`).
 
 1. **Cross-Field Analogical Discovery (`swarm-search` optional)**: Translate a rigorous structural principle, topological move, energy landscape, or growth/morphogenesis process from `{lens_name}` (or another distant scientific field) into an exact mathematical/algorithmic operator for our problem.
@@ -563,10 +590,10 @@ STRICT DISCIPLINE: Do NOT run `swarm-eval`, do NOT generate `matplotlib` plots, 
    swarm-submit-hypothesis --parent-id "{node['node_id']}" --island-id {island['island_id']} --role IMPLEMENT \\
      --rationale "<WHY: first-principles derivation explaining why narrow methods plateau and why the imported mechanism from {lens_name} breaks the barrier>" \\
      --novel-insight "<INSIGHT: source scientific discipline + hidden assumption broken + novel mathematical structure or move operator>" \\
-     --target-files "<WHERE: exact files to reuse (e.g. ./shared/packing_sdk.hpp) and exact files/functions to create or edit (e.g. ./solver.cpp, ./patch.json)>" \\
-     --exact-changes "<WHAT & HOW: explicit step-by-step equations, algorithm, data structures, compile command, and sweep parameters>" \\
-     --verification-plan "<VERIFY: exact command to run, explicit target puzzle IDs n=..., measurable pass/fail threshold, and swarm-check patch.json --apply>" \\
-     --target-slice "<SLICE: target non-wall anchor slice>" \\
+     --target-files "<WHERE: exact ./shared/ harnesses to reuse and exact files/functions to create or edit (e.g. ./solver.cpp, ./patch.json)>" \\
+     --exact-changes "<WHAT & HOW: concise <=250-line operator reusing ./shared/ harnesses, explicit equations, compile command, and deep sweep on 5-8 targets>" \\
+     --verification-plan "<VERIFY: exact command to run, explicit 5-8 high-opportunity targets, measurable pass/fail threshold, and fast verification + swarm-submit>" \\
+     --target-slice "<SLICE: target high-opportunity slice>" \\
      --title "<TITLE: concise 4-8 word novel mechanism title>"
    ```
 """
@@ -630,17 +657,21 @@ CRITICAL RULE: `vault/best` already unions per-instance JSON outputs automatical
                 else f"\n### [1] WHY — First-Principles Rationale\n{node['rationale']}\n"
             )
             hyp_block = "" if exec_spec else f"\n### Hypothesis & Mechanism\n{node['hypothesis']}\n"
+            shared_harnesses = self._discover_shared_harnesses()
+            harness_list_str = (
+                f" ({', '.join(shared_harnesses)})" if shared_harnesses else " (`./shared/` and `./shared/engines/`)"
+            )
             task_prompt = f"""{common_context}
 ## Your Assignment (`{role}` — Standardized HypothesisExecutionSpec Builder)
 Title: **{node['title']}**
 {insight_banner}{spec_section}{hyp_block}
 CRITICAL EXECUTION & FIDELITY RULES:
 - **FOLLOW THE SPEC FAITHFULLY**: Build and keep the EXACT files in `[2] TARGET FILES`, implement the EXACT algorithm in `[3] EXACT CHANGES`, and execute `[4] VERIFICATION PLAN`. Do NOT silently swap in a different algorithm and do NOT exit with zero solver files built!
-- **NEVER write 'gap-falsification' or 'impossibility audit' reports!** Proved optima and `L=K` integer walls are already excluded from `./shared/gap_ledger.json`.
-- **FAST BUILD & DEEP SCREEN (NO BOILERPLATE):** Reuse `./shared/slp_harness.hpp`, `./shared/packing_sdk.hpp`, and `./shared/engines/` (`qpf_slp_engine.hpp`, `apoptotic_slp.hpp`, `sphero_energy.hpp`) instead of rewriting SAT/LP/JSON boilerplate from scratch. Keep new operator code concise (`<= 250` lines) so compile finishes in `< 4` minutes, and spend your runtime budget screening **`5–8` high-waste `n = 120..960` puzzles** deeply (`30–60s` per puzzle) instead of `1–2s` across `50+` puzzles!
-1. Implement the specified C++20 (`g++ -O3 -fopenmp`, e.g. `#include "shared/slp_harness.hpp"` or `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python solver in your working directory, emitting improved subproblems into `patch.json`.
-2. Verify & merge in `<15ms` via `swarm-check patch.json --apply --candidate {copied_cand}` and run all verification checks in `[4] VERIFICATION PLAN`.
-3. Submit your verified candidate via `swarm-submit {copied_cand} --summary "SPEC_FILES=<files built>; NEAR_MISS_MARGIN=<min_n(L_achieved - L_cur)>; MECHANISM=<exact spec implemented>; VERIFY=<measured test output & score>"`! (Reporting `NEAR_MISS_MARGIN` <= 0.015 automatically promotes your compiled engine to `vault/solvers/` and spawns an iterative `DEEPEN` refinement!)
+- **NEVER write 'impossibility' or 'audit-only' reports!** Attack open high-opportunity targets (already filtered in `./shared/gap_ledger.json` when present) and always build, run, and measure a concrete solver!
+- **FAST BUILD & DEEP SCREEN (NO BOILERPLATE):** Reuse existing shared harnesses{harness_list_str} instead of rewriting verification, I/O, or solver boilerplate from scratch. Keep new operator code concise (`<= 250` lines) so build+compile finishes in `< 4` minutes, and spend your runtime budget screening **`5–8` highest-opportunity instances** deeply (`30–60s` per instance) instead of `1–2s` across `50+` instances!
+1. Implement the specified solver/kernel/algorithm in your working directory (C++20/CUDA/Python/Rust as appropriate), reusing `./shared/` harnesses and emitting improved candidate/patch outputs.
+2. Verify & merge via `swarm-check` (if available) or `swarm-eval {copied_cand}` and run all verification checks in `[4] VERIFICATION PLAN`.
+3. Submit your verified candidate via `swarm-submit {copied_cand} --summary "SPEC_FILES=<files built>; NEAR_MISS_MARGIN=<min_gap_to_current_best>; MECHANISM=<exact spec implemented>; VERIFY=<measured test output & score>"`! (Reporting `NEAR_MISS_MARGIN` <= 0.015 automatically promotes your compiled engine to `vault/solvers/` and spawns an iterative `DEEPEN` refinement!)
 """
         return system_prompt, task_prompt
 
@@ -956,10 +987,14 @@ CRITICAL EXECUTION & FIDELITY RULES:
                 env["OMP_NUM_THREADS"] = "4"
                 env["PATH"] = f"{self.ws / 'bin'}:/usr/local/cuda/bin:{env.get('PATH', '/usr/bin:/bin')}"
                 lf = log_file.open("a", encoding="utf-8")
+                lock_file = self.ws / ".polish_daemon.lock"
                 self._bg_polish_proc = await asyncio.create_subprocess_exec(
                     "nice",
                     "-n",
                     "19",
+                    "flock",
+                    "-n",
+                    str(lock_file),
                     "bash",
                     str(script),
                     cwd=str(self.ws),
@@ -1000,6 +1035,59 @@ CRITICAL EXECUTION & FIDELITY RULES:
                     pass
         self._bg_polish_proc = None
 
+    async def _vault_sweep_loop(self) -> None:
+        """Supervise optional zero-token vault solver sweep daemon (`eval/vault_sweep.sh` or `shared/vault_sweep_daemon.py`)."""
+        sh_script = self.ws / "eval" / "vault_sweep.sh"
+        py_script = self.ws / "shared" / "vault_sweep_daemon.py"
+        if sh_script.is_file():
+            cmd = ["bash", str(sh_script)]
+        elif py_script.is_file():
+            cmd = [sys.executable, str(py_script)]
+        else:
+            return
+        log_file = self.ws / "logs" / "vault_sweep.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = self.ws / ".vault_sweep.lock"
+
+        while not self.stop_event.is_set():
+            if self._vault_sweep_proc is None or self._vault_sweep_proc.returncode is not None:
+                env = dict(os.environ)
+                env["RSWARM_WORKSPACE"] = str(self.ws)
+                env["OMP_NUM_THREADS"] = "4"
+                lf = log_file.open("a", encoding="utf-8")
+                self._vault_sweep_proc = await asyncio.create_subprocess_exec(
+                    "nice",
+                    "-n",
+                    "19",
+                    "flock",
+                    "-n",
+                    str(lock_file),
+                    *cmd,
+                    cwd=str(self.ws),
+                    env=env,
+                    stdout=lf,
+                    stderr=asyncio.subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                lf.close()
+                self.db.log_event("INFO", "vault-sweep", f"Supervised zero-token vault sweep daemon (pid={self._vault_sweep_proc.pid})")
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=15.0)
+            except asyncio.TimeoutError:
+                pass
+
+    def _stop_vault_sweep(self) -> None:
+        proc = self._vault_sweep_proc
+        if proc is not None and proc.returncode is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except OSError:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+        self._vault_sweep_proc = None
+
     async def run(
         self,
         *,
@@ -1039,6 +1127,8 @@ CRITICAL EXECUTION & FIDELITY RULES:
         await self.eval_service.start_rpc_server()
         if (self.ws / "eval" / "background_polish.sh").is_file():
             self._bg_polish_task = asyncio.create_task(self._background_polisher_loop())
+        if (self.ws / "eval" / "vault_sweep.sh").is_file() or (self.ws / "shared" / "vault_sweep_daemon.py").is_file():
+            self._vault_sweep_task = asyncio.create_task(self._vault_sweep_loop())
 
         dash_url = ""
         started_own_dash = False
@@ -1162,6 +1252,9 @@ CRITICAL EXECUTION & FIDELITY RULES:
             self._stop_background_polisher()
             if self._bg_polish_task is not None:
                 self._bg_polish_task.cancel()
+            self._stop_vault_sweep()
+            if self._vault_sweep_task is not None:
+                self._vault_sweep_task.cancel()
             await self.eval_service.stop_rpc_server()
             if started_own_dash:
                 await self.dashboard.stop()
