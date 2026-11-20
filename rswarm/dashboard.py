@@ -1125,7 +1125,7 @@ async function fetchDiaryFilter(filter) {
   if (state.diaryLoading === key) return;
   state.diaryLoading = key;
   try {
-    const r = await fetch(`${API_BASE}api/diary?type=${encodeURIComponent(key)}&limit=500`);
+    const r = await fetch(`${API_BASE}api/node/__diary__${encodeURIComponent(key)}`);
     if (r.ok) {
       const j = await r.json();
       if (j && j.ok) {
@@ -1820,14 +1820,19 @@ class DashboardServer:
                     writer.write(raw_csv)
             elif path.startswith("/api/node/"):
                 nid = path[len("/api/node/") :].strip("/")
-                node = self.db.get_node(nid)
-                if not node:
-                    self._write_resp(writer, 404, "application/json", b'{"ok":false,"error":"not found"}')
-                else:
-                    log_file = self.ws / "logs" / f"{nid}.log"
-                    log_tail = log_file.read_text(errors="replace")[-16000:] if log_file.is_file() else ""
-                    body = json.dumps({"ok": True, "node": node, "log_tail": log_tail}).encode("utf-8")
+                if nid.startswith("__diary__"):
+                    etype = nid[len("__diary__") :].strip().upper() or "ALL"
+                    body = json.dumps(self.db.get_diary_entries(entry_type=etype, limit=500)).encode("utf-8")
                     self._write_resp(writer, 200, "application/json", body)
+                else:
+                    node = self.db.get_node(nid)
+                    if not node:
+                        self._write_resp(writer, 404, "application/json", b'{"ok":false,"error":"not found"}')
+                    else:
+                        log_file = self.ws / "logs" / f"{nid}.log"
+                        log_tail = log_file.read_text(errors="replace")[-16000:] if log_file.is_file() else ""
+                        body = json.dumps({"ok": True, "node": node, "log_tail": log_tail}).encode("utf-8")
+                        self._write_resp(writer, 200, "application/json", body)
             else:
                 self._write_resp(writer, 404, "text/plain", b"Not Found")
             await writer.drain()
