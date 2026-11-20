@@ -55,9 +55,19 @@ class TestRswarmCore(unittest.IsolatedAsyncioTestCase):
             ws = Path(tmp) / "ws-live"
             ws.mkdir(parents=True)
             cfg = SwarmConfig(name="live-test", workspace_dir=str(ws), brief="Test brief")
-            self.assertEqual(cfg.model_and_effort_for_role("EXPLORE"), ("anthropic-morph-dsv41flash", "max"))
-            self.assertEqual(cfg.model_and_effort_for_role("IMPLEMENT"), ("anthropic-morph-dsv41flash", "minimal"))
-            self.assertEqual(cfg.model_and_effort_for_role("DEBUG"), ("anthropic-morph-dsv41flash", "minimal"))
+            self.assertEqual(cfg.model_and_effort_for_role("EXPLORE"), ("gemini-4-neon-xhigh", "xhigh"))
+            self.assertEqual(
+                cfg.model_and_effort_for_role("IMPLEMENT"),
+                ("gemini-3.8-flash-high,gemini-3.8-flash-high,anthropic-morph-dsv41flash", "medium"),
+            )
+            self.assertEqual(
+                cfg.model_and_effort_for_role("DEEPEN"),
+                ("gemini-3.8-flash-high,gemini-3.8-flash-high,anthropic-morph-dsv41flash", "medium"),
+            )
+            self.assertEqual(
+                cfg.model_and_effort_for_role("DEBUG"),
+                ("gemini-3.8-flash-high,gemini-3.8-flash-high,anthropic-morph-dsv41flash", "medium"),
+            )
 
             (ws / "swarm.json").write_text(json.dumps(cfg.to_dict(), indent=2))
             db = SwarmDB(ws / "state" / "swarm.db")
@@ -459,6 +469,7 @@ PY
                     workspace_dir=str(ws),
                     brief="Test 429 & checkpoint resume.",
                     harness="claude-mux-lite",
+                    implementer_model="anthropic-morph-dsv41flash",
                     agent_timeout_sec=5,
                     http_timeout_sec=5,
                     max_timeout_retries=2,
@@ -1006,6 +1017,15 @@ PY
             bt_page = db.get_diary_entries("BREAKTHROUGH", limit=500)
             self.assertGreaterEqual(len(bt_page["entries"]), 1)
             self.assertEqual(bt_page["entries"][0]["entry_type"], "BREAKTHROUGH")
+
+            # Verify general SwarmConfig defaults + dynamic shared harness discovery for future swarms!
+            default_cfg = SwarmConfig(name="future-swarm", workspace_dir=str(ws), brief="Generic research problem.")
+            self.assertIn("gemini-3.8-flash-high", default_cfg.implementer_model)
+            self.assertEqual(default_cfg.deepen_model, default_cfg.implementer_model)
+            self.assertGreaterEqual(default_cfg.concurrency, 20)
+            (ws / "shared").mkdir(parents=True, exist_ok=True)
+            (ws / "shared" / "fast_eval_sdk.hpp").write_text("// reusable harness\n")
+            self.assertIn("./shared/fast_eval_sdk.hpp", coord._discover_shared_harnesses())
 
 
 if __name__ == "__main__":
