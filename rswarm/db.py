@@ -617,16 +617,18 @@ class SwarmDB:
         preferred_island: int | None = None,
         exclude_roles: tuple[str, ...] = (),
         boost_explore: bool = False,
+        boost_deepen: bool = False,
     ) -> dict[str, Any] | None:
         """Atomically transition the highest-priority QUEUED node to RUNNING, prioritizing novel leaps."""
         exp_rank = 1.2 if boost_explore else 3.5
+        deep_rank = 1.8 if boost_deepen else 3.0
         role_case_sql = (
             "CASE "
             "WHEN role='META' THEN 0 "
             "WHEN role='DEBUG' THEN 1 "
-            f"WHEN role='EXPLORE' THEN {1 if boost_explore else 4} "
-            "WHEN role='IMPLEMENT' AND COALESCE(origin, 'researcher') != 'auto_replenish' THEN 2 "
-            "WHEN role='DEEPEN' THEN 3 "
+            f"WHEN role='EXPLORE' THEN {1 if boost_explore else 5} "
+            f"WHEN role='DEEPEN' THEN {2 if boost_deepen else 4} "
+            "WHEN role='IMPLEMENT' AND COALESCE(origin, 'researcher') != 'auto_replenish' THEN 3 "
             "WHEN role='CROSSOVER' THEN 5 "
             "ELSE 6 END"
         )
@@ -658,10 +660,10 @@ class SwarmDB:
                     rp = 1.0
                 elif role == "EXPLORE":
                     rp = exp_rank
+                elif role == "DEEPEN":
+                    rp = deep_rank
                 elif role == "IMPLEMENT":
                     rp = 5.0 if (orig == "auto_replenish" and not has_insight) else 2.0
-                elif role == "DEEPEN":
-                    rp = 3.0
                 elif role == "CROSSOVER":
                     rp = 4.0
                 else:

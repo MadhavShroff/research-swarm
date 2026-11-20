@@ -637,7 +637,8 @@ Title: **{node['title']}**
 CRITICAL EXECUTION & FIDELITY RULES:
 - **FOLLOW THE SPEC FAITHFULLY**: Build and keep the EXACT files in `[2] TARGET FILES`, implement the EXACT algorithm in `[3] EXACT CHANGES`, and execute `[4] VERIFICATION PLAN`. Do NOT silently swap in a different algorithm and do NOT exit with zero solver files built!
 - **NEVER write 'gap-falsification' or 'impossibility audit' reports!** Proved optima and `L=K` integer walls are already excluded from `./shared/gap_ledger.json`.
-1. Implement the specified C++20 (`g++ -O3 -fopenmp`, e.g. `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python solver in your working directory, emitting improved subproblems into `patch.json`.
+- **FAST BUILD & DEEP SCREEN (NO BOILERPLATE):** Reuse `./shared/slp_harness.hpp`, `./shared/packing_sdk.hpp`, and `./shared/engines/` (`qpf_slp_engine.hpp`, `apoptotic_slp.hpp`, `sphero_energy.hpp`) instead of rewriting SAT/LP/JSON boilerplate from scratch. Keep new operator code concise (`<= 250` lines) so compile finishes in `< 4` minutes, and spend your runtime budget screening **`5–8` high-waste `n = 120..960` puzzles** deeply (`30–60s` per puzzle) instead of `1–2s` across `50+` puzzles!
+1. Implement the specified C++20 (`g++ -O3 -fopenmp`, e.g. `#include "shared/slp_harness.hpp"` or `#include "shared/packing_sdk.hpp"`), CUDA (`nvcc -O3`), or Python solver in your working directory, emitting improved subproblems into `patch.json`.
 2. Verify & merge in `<15ms` via `swarm-check patch.json --apply --candidate {copied_cand}` and run all verification checks in `[4] VERIFICATION PLAN`.
 3. Submit your verified candidate via `swarm-submit {copied_cand} --summary "SPEC_FILES=<files built>; NEAR_MISS_MARGIN=<min_n(L_achieved - L_cur)>; MECHANISM=<exact spec implemented>; VERIFY=<measured test output & score>"`! (Reporting `NEAR_MISS_MARGIN` <= 0.015 automatically promotes your compiled engine to `vault/solvers/` and spawns an iterative `DEEPEN` refinement!)
 """
@@ -1111,7 +1112,7 @@ CRITICAL EXECUTION & FIDELITY RULES:
                         if active_exp >= self.cfg.max_concurrent_researchers:
                             excl_set.add("EXPLORE")
                         if self.cfg.concurrency >= 4:
-                            if active_deep >= max(2, self.cfg.concurrency // 3):
+                            if active_deep >= max(4, self.cfg.concurrency // 3):
                                 excl_set.add("DEEPEN")
                             if active_cross >= 1:
                                 excl_set.add("CROSSOVER")
@@ -1137,6 +1138,7 @@ CRITICAL EXECUTION & FIDELITY RULES:
                             preferred_island=self._island_rr % max(1, self.cfg.num_islands),
                             exclude_roles=tuple(sorted(excl_set)),
                             boost_explore=(active_exp == 0 and self.cfg.concurrency >= 3),
+                            boost_deepen=(active_deep < max(4, self.cfg.concurrency // 3) and self.cfg.concurrency >= 4),
                         )
                         if next_node is None:
                             break
