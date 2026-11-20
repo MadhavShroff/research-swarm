@@ -114,6 +114,7 @@ class SwarmCoordinator:
         self._island_rr: int = 0
         self._slice_rr: int = 0
         self._lens_rr: int = 0
+        self._model_rr: dict[str, int] = {}
         self._model_cooldown_until: dict[str, float] = {}
         self._model_rl_streak: dict[str, int] = {}
         self._last_rescue_check: float = 0.0
@@ -323,6 +324,18 @@ class SwarmCoordinator:
         except OSError:
             pass
         return digest
+
+    def _pick_model_for_role(self, role: str) -> tuple[str, str]:
+        """Select the next non-throttled model from a role's single model or comma-separated multi-provider pool."""
+        raw_spec, effort_lvl = self.cfg.model_and_effort_for_role(role)
+        pool = [m.strip() for m in raw_spec.split(",") if m.strip()]
+        if len(pool) <= 1:
+            return raw_spec.strip(), effort_lvl
+        now_m = time.time()
+        avail = [m for m in pool if now_m >= self._model_cooldown_until.get(m, 0.0)] or pool
+        idx = self._model_rr.get(role, 0)
+        self._model_rr[role] = idx + 1
+        return avail[idx % len(avail)], effort_lvl
 
     def _next_science_lens(self, node: dict[str, Any], island: dict[str, Any]) -> tuple[str, str]:
         """Select a disparate cross-disciplinary scientific lens, rotating across physics, biology, math, materials, and global traditions."""
@@ -715,7 +728,7 @@ CRITICAL EXECUTION & FIDELITY RULES:
         role = str(node["role"]).upper()
         islands = {int(i["island_id"]): i for i in self.db.get_islands()}
         island = islands.get(int(node["island_id"]), {"island_id": 0, "name": "main", "strategy_focus": ""})
-        model_id, effort_lvl = self.cfg.model_and_effort_for_role(role)
+        model_id, effort_lvl = self._pick_model_for_role(role)
         # Gemini models (`gemini-*`) route automatically through Sparky's `agy` CLI (`--output-format stream-json`).
         # Anthropic subscription rows (`claude-*`) route through `claude -p` (`claude-mux`) to forward OAuth.
         if is_gemini_agy_model(model_id):
@@ -1113,10 +1126,11 @@ CRITICAL EXECUTION & FIDELITY RULES:
                             if self.cfg.model_and_effort_for_role(r_act)[0].lower().startswith("claude-")
                         )
                         for r_cand in ("META", "DEBUG", "IMPLEMENT", "DEEPEN", "EXPLORE", "CROSSOVER"):
-                            m_id, _ = self.cfg.model_and_effort_for_role(r_cand)
-                            if now_m < self._model_cooldown_until.get(m_id, 0.0):
+                            m_spec, _ = self.cfg.model_and_effort_for_role(r_cand)
+                            m_pool = [m.strip() for m in m_spec.split(",") if m.strip()]
+                            if m_pool and all(now_m < self._model_cooldown_until.get(m, 0.0) for m in m_pool):
                                 excl_set.add(r_cand)
-                            elif m_id.lower().startswith("claude-") and active_claude_oauth >= 2:
+                            elif m_pool and all(m.lower().startswith("claude-") for m in m_pool) and active_claude_oauth >= 2:
                                 excl_set.add(r_cand)
 
                         next_node = self.db.claim_next_queued_node(

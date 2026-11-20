@@ -988,6 +988,13 @@ PY
             self.assertEqual(it_node["role"], "DEEPEN")
             self.assertIn("Iterate near-miss", it_node["title"])
 
+            # Verify comma-separated multi-provider builder pool rotates across DeepSeek + Gemini 3.8 Flash!
+            cfg.implementer_model = "anthropic-morph-dsv41flash,anthropic-morph-dsv41flash,gemini-3.8-flash-high"
+            cfg.validate()
+            coord = SwarmCoordinator(cfg, db)
+            picks = [coord._pick_model_for_role("IMPLEMENT")[0] for _ in range(3)]
+            self.assertEqual(picks, ["anthropic-morph-dsv41flash", "anthropic-morph-dsv41flash", "gemini-3.8-flash-high"])
+
 
 if __name__ == "__main__":
     unittest.main()
