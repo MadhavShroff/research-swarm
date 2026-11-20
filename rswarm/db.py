@@ -1179,24 +1179,52 @@ class SwarmDB:
             nodes = [
                 dict(r)
                 for r in conn.execute(
-                    "SELECT * FROM nodes WHERE status NOT IN ('REJECTED_NOVELTY', 'ARCHIVED_STALE') ORDER BY created_at ASC"
+                    """
+                    SELECT
+                        node_id, parent_id, secondary_parent_id, island_id, role, status,
+                        depth, origin, novelty_score, title,
+                        substr(COALESCE(hypothesis, ''), 1, 240) AS hypothesis,
+                        substr(COALESCE(novel_insight, ''), 1, 180) AS novel_insight,
+                        substr(COALESCE(code_summary, ''), 1, 240) AS code_summary,
+                        substr(COALESCE(rationale, ''), 1, 140) AS rationale,
+                        CASE WHEN COALESCE(execution_spec_json, '{}') NOT IN ('', '{}') THEN 1 ELSE 0 END AS has_execution_spec,
+                        score, speedup, goal_progress, valid, eval_ms, hosted_score,
+                        tmux_window, harness_used, model_used, effort_used, visits,
+                        created_at, started_at, finished_at
+                    FROM nodes
+                    WHERE status NOT IN ('REJECTED_NOVELTY', 'ARCHIVED_STALE')
+                    ORDER BY created_at ASC
+                    """
                 ).fetchall()
             ]
             diary = [
                 dict(r)
-                for r in conn.execute("SELECT * FROM diary ORDER BY entry_id DESC LIMIT 200").fetchall()
+                for r in conn.execute(
+                    """
+                    SELECT entry_id, node_id, island_id, entry_type, title,
+                           substr(COALESCE(body, ''), 1, 420) AS body,
+                           score, speedup, created_at
+                    FROM diary ORDER BY entry_id DESC LIMIT 120
+                    """
+                ).fetchall()
             ]
             bulletin = [
                 dict(r)
-                for r in conn.execute("SELECT * FROM bulletin ORDER BY post_id DESC LIMIT 50").fetchall()
+                for r in conn.execute("SELECT * FROM bulletin ORDER BY post_id DESC LIMIT 40").fetchall()
             ]
             events = [
                 dict(r)
-                for r in conn.execute("SELECT * FROM events ORDER BY event_id DESC LIMIT 120").fetchall()
+                for r in conn.execute("SELECT * FROM events ORDER BY event_id DESC LIMIT 60").fetchall()
             ]
             hosted = [
                 dict(r)
-                for r in conn.execute("SELECT * FROM hosted_submissions ORDER BY sub_id DESC LIMIT 40").fetchall()
+                for r in conn.execute(
+                    """
+                    SELECT sub_id, node_id, candidate_path, local_score, hosted_score, status,
+                           substr(COALESCE(response_json, '{}'), 1, 300) AS response_json, created_at
+                    FROM hosted_submissions ORDER BY sub_id DESC LIMIT 30
+                    """
+                ).fetchall()
             ]
 
         # Compute non-overlapping angular coordinates + progress-proportional radial lengths!
