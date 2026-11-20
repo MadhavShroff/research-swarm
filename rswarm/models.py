@@ -58,10 +58,15 @@ def resolve_agy_model_id(model_id: str, effort: str = "high") -> str:
 
 
 def validate_model_choice(model_id: str, allow_override: bool = False) -> str:
-    """Refuse forbidden paid/retired models unless explicitly overridden."""
+    """Refuse forbidden paid/retired models unless explicitly overridden. Supports comma-separated pools."""
     cleaned = (model_id or "").strip()
     if not cleaned:
         raise ValueError("Model ID cannot be empty.")
+    if "," in cleaned:
+        parts = [validate_model_choice(p.strip(), allow_override) for p in cleaned.split(",") if p.strip()]
+        if not parts:
+            raise ValueError("Model pool cannot be empty.")
+        return ",".join(parts)
     low = cleaned.lower()
     if not allow_override:
         for bad in FORBIDDEN_MODEL_PREFIXES:
